@@ -11,8 +11,10 @@ import networkx as nx
 
 from ..schemas.models import (
     Edge,
+    EntityImportance,
     EntityType,
     EntityNode,
+    GraphAnalytics,
     KnowledgeGraphStats,
     RelationType,
 )
@@ -277,6 +279,77 @@ class KnowledgeGraph:
             relation_type_counts=relation_types,
             avg_edge_weight=round(avg_weight, 4),
             domains_covered=sorted(domains),
+        )
+
+    def analyze(self, top_k: int = 10) -> GraphAnalytics:
+        n = self._graph.number_of_nodes()
+        e = self._graph.number_of_edges()
+
+        if n == 0:
+            return GraphAnalytics(
+                total_nodes=0,
+                total_edges=0,
+                connected_components=0,
+                most_important=[],
+                communities=0,
+                top_communities=[],
+            )
+
+        undirected = self._graph.to_undirected()
+        components = list(nx.connected_components(undirected))
+
+        pr = nx.pagerank(self._graph, alpha=0.85, max_iter=100)
+        degree = dict(self._graph.degree())
+
+        try:
+            bet = nx.betweenness_centrality(self._graph)
+        except Exception:
+            bet = {node: 0.0 for node in self._graph.nodes()}
+
+        def _score(node: str) -> tuple[float, float, float]:
+            return (pr.get(node, 0.0), degree.get(node, 0), bet.get(node, 0.0))
+
+        ranked = sorted(self._graph.nodes(), key=_score, reverse=True)[:top_k]
+
+        most_important: list[EntityImportance] = []
+        for node_id in ranked:
+            data = self._entity_index.get(node_id)
+            most_important.append(
+                EntityImportance(
+                    entity_id=node_id,
+                    name=data.name if data else str(node_id),
+                    entity_type=data.entity_type if data else EntityType.CONCEPT,
+                    page_rank=round(pr.get(node_id, 0.0), 6),
+                    degree=degree.get(node_id, 0),
+                    betweenness=round(bet.get(node_id, 0.0), 6),
+                )
+            )
+
+        try:
+            community_gen = nx.community.louvain_communities(undirected, seed=42)
+            community_list = [sorted(c) for c in community_gen]
+        except Exception:
+            community_list = [sorted(undirected.nodes())]
+
+        top_communities: list[dict[str, Any]] = []
+        for i, members in enumerate(community_list[:5]):
+            sub = undirected.subgraph(members)
+            top_communities.append(
+                {
+                    "id": i,
+                    "size": len(members),
+                    "members": members[:10],
+                    "density": round(nx.density(sub), 4) if len(members) > 1 else 0.0,
+                }
+            )
+
+        return GraphAnalytics(
+            total_nodes=n,
+            total_edges=e,
+            connected_components=len(components),
+            most_important=most_important,
+            communities=len(community_list),
+            top_communities=top_communities,
         )
 
     def save(self) -> None:
