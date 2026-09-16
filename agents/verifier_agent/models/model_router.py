@@ -25,7 +25,7 @@ LatencyBudget = Literal["interactive", "balanced", "thorough"]
 _FAST_EMBEDDING = "sentence-transformers/all-MiniLM-L6-v2"
 _FAST_RERANKER = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 _FAST_NLI = "cross-encoder/nli-deberta-v3-base"
-_QUALITY_NLI = "microsoft/deberta-v3-large"
+_QUALITY_NLI = "cross-encoder/nli-deberta-v3-base"
 _QUALITY_RERANKER = "BAAI/bge-reranker-large"
 
 
