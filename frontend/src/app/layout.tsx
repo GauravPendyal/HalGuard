@@ -1,24 +1,35 @@
-import type { Metadata } from 'next';
-import './globals.css';
-import { AnalyticsModal, SettingsModal, AuditReportModal } from '@/components/modals';
+import type { Metadata, Viewport } from "next";
+import "./globals.css";
+import "./landing.css";
+import { AuthProvider } from "@/lib/auth/AuthContext";
 
 export const metadata: Metadata = {
-  title: 'HalluciGuard - AI Verification Operating System',
-  description: 'Real-time multi-agent verification engine for AI responses. Visualize reasoning, claims, and ground truth evidence.',
+  title: "HalluciGuard — Trace the evidence",
+  description:
+    "HalluciGuard traces AI-generated claims to their supporting evidence.",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#edf4ef",
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({
   children,
-}: Readonly<{
+}: {
   children: React.ReactNode;
-}>) {
+}) {
   return (
-    <html lang="en" className="dark">
-      <body className="bg-zinc-950 text-zinc-100 antialiased font-sans">
-        {children}
-        <AnalyticsModal />
-        <SettingsModal />
-        <AuditReportModal />
+    <html lang="en">
+      <head>
+        <link
+          href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap"
+          rel="stylesheet"
+        />
+      </head>
+      <body>
+        <AuthProvider>{children}</AuthProvider>
       </body>
     </html>
   );

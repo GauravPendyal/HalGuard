@@ -329,7 +329,31 @@ def get_user_by_token(token: str) -> Dict[str, Any]:
         cursor.execute("SELECT id, email, name, picture, created_at FROM users WHERE id = ?", (user_id,))
         row = cursor.fetchone()
         if not row:
-            raise ValueError("User not found")
+            # User not in local DB (e.g. serverless instance restart or db reset)
+            # Reconstruct from token payload and restore record
+            email = (payload.get("email") or f"{user_id}@auth.local").strip().lower()
+            name = payload.get("name") or email.split("@")[0]
+            picture = payload.get("picture")
+            now = datetime.datetime.now(timezone.utc).isoformat()
+            try:
+                cursor.execute(
+                    """
+                    INSERT OR REPLACE INTO users (id, email, name, picture, auth_provider, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (user_id, email, name, picture, "jwt", now),
+                )
+                conn.commit()
+            except Exception:
+                pass
+            return {
+                "id": user_id,
+                "sub": user_id,
+                "email": email,
+                "name": name,
+                "picture": picture,
+                "created_at": now,
+            }
         return {
             "id": row["id"],
             "sub": row["id"],
