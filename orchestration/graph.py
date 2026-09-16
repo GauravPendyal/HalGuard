@@ -400,8 +400,8 @@ async def _verifier_node(state: HalluciGuardState) -> dict[str, Any]:
     VerificationPipeline, SuspiciousClaim, VerifierInputV2 = _verifier_imports()
     node_start = start_timer()
     try:
-        # Phase 2: Verifier MUST receive generated LLM response / claims, NOT user query
-        claim_text = state.get("llm_response") or state.get("draft_response") or state.get("user_query", "")
+        # Verifier evaluates the core factual claim
+        claim_text = state.get("user_query") or state.get("llm_response") or state.get("draft_response") or ""
         payload = VerifierInputV2(
             query_id=state.get("request_id")
             or state.get("execution_id")
@@ -412,7 +412,7 @@ async def _verifier_node(state: HalluciGuardState) -> dict[str, Any]:
             ],
         )
         try:
-            verifier_timeout = float(os.environ.get("VERIFIER_TIMEOUT_SECONDS", "60.0"))
+            verifier_timeout = float(os.environ.get("VERIFIER_TIMEOUT_SECONDS", "120.0"))
             verifier_res = await asyncio.wait_for(VerificationPipeline().verify(payload), timeout=verifier_timeout)
             verifier = _dump(verifier_res)
         except (asyncio.TimeoutError, Exception) as sub_err:

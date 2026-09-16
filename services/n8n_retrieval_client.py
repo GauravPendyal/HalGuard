@@ -64,14 +64,14 @@ class N8NRetrievalClient:
             webhook_url
             or os.environ.get(
                 "N8N_RETRIEVAL_WEBHOOK_URL",
-                "https://manjusogala.app.n8n.cloud/webhook/halluciguard-verify-v2",
+                "https://manju200609.app.n8n.cloud/webhook/halluciguard-verify-v2",
             )
         ).strip()
         self.health_url = (
             health_url
             or os.environ.get(
                 "N8N_HEALTH_WEBHOOK_URL",
-                "https://manjusogala.app.n8n.cloud/webhook/halluciguard-health",
+                "https://manju200609.app.n8n.cloud/webhook/halluciguard-health",
             )
         ).strip()
         self.auth_mode = (

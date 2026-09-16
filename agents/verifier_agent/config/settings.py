@@ -73,8 +73,8 @@ class Settings(BaseSettings):
     # contract and hermetic tests. Deployments that have paused n8n disable it
     # explicitly with N8N_RETRIEVAL_ENABLED=false (see render.yaml/.env.example).
     n8n_retrieval_enabled: bool = True
-    n8n_retrieval_webhook_url: str = "https://manjusogala.app.n8n.cloud/webhook/halluciguard-verify-v2"
-    n8n_health_webhook_url: str = "https://manjusogala.app.n8n.cloud/webhook/halluciguard-health"
+    n8n_retrieval_webhook_url: str = "https://manju200609.app.n8n.cloud/webhook/halluciguard-verify-v2"
+    n8n_health_webhook_url: str = "https://manju200609.app.n8n.cloud/webhook/halluciguard-health"
     n8n_auth_mode: str = "header"  # "header" (default) or "none"
     n8n_header_name: str = "X-API-Key"
     n8n_webhook_secret: Optional[str] = None
