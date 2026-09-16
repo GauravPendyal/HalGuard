@@ -21,10 +21,8 @@ function SourceChip({ name, state }: { name: string; state: "succeeded" | "faile
 }
 
 /**
- * RetrievalSummary — the n8n retrieval/orchestration layer, shown honestly:
- * which sources were attempted, which returned evidence, and which failed. A
- * standing note reinforces that n8n only retrieves — the reranker, NLI, and
- * scoring that decide the verdict run in Python.
+ * RetrievalSummary — the active Python retrieval layer, shown honestly:
+ * which sources were attempted, which returned evidence, and which failed.
  */
 export function RetrievalSummary({ retrieval }: { retrieval: RetrievalSummaryVM | null }) {
   if (!retrieval) {
@@ -47,7 +45,7 @@ export function RetrievalSummary({ retrieval }: { retrieval: RetrievalSummaryVM 
       <div className="flex items-center justify-between border-b border-line px-4 py-3">
         <span className="inline-flex items-center gap-2">
           <Network className="h-4 w-4 text-conflicted" aria-hidden="true" />
-          <span className="hg-eyebrow">Retrieval · n8n orchestration</span>
+          <span className="hg-eyebrow">Retrieval · Python verifier</span>
         </span>
         {retrieval.cacheHit != null && (
           <span className="font-mono text-[11px] text-ink-dim">
@@ -94,9 +92,8 @@ export function RetrievalSummary({ retrieval }: { retrieval: RetrievalSummaryVM 
         )}
 
         <p className="rounded-md border border-line bg-panel-inset px-3 py-2 text-[12px] leading-relaxed text-ink-dim">
-          n8n handles retrieval and orchestration only — domain routing, source calls, fallback, and
-          de-duplication. The BGE reranker, DeBERTa NLI, and evidence scoring that determine each verdict
-          run in Python.
+          Python currently handles domain routing, source calls, fallback, de-duplication, BGE reranking,
+          DeBERTa NLI, and evidence scoring. The n8n workflow is paused and is not used for this run.
         </p>
       </div>
     </Panel>

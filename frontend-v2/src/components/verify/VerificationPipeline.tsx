@@ -93,7 +93,7 @@ export function VerificationPipeline({
               {duration(result.totalLatencyMs)} total
             </span>
           )}
-          <Tooltip content="n8n retrieves and orchestrates evidence. The BGE reranker, DeBERTa NLI, and scoring that decide the verdict all run in Python — n8n never judges.">
+          <Tooltip content="The active request path runs retrieval, reranking, NLI, and scoring in Python. The n8n workflow is currently paused.">
             <span className="inline-flex items-center gap-1 text-[12px] text-ink-dim">
               <Info className="h-3.5 w-3.5" aria-hidden="true" />
               How stages map

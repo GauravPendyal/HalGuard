@@ -6,15 +6,21 @@ services:
     plan: standard
     buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
     startCommand: "uvicorn orchestration.api:app --host 0.0.0.0 --port $PORT"
+    disk:
+      name: halluciguard-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
       - key: HALLUCIGUARD_ENV
         value: production
+      - key: AUTH_DB_PATH
+        value: /var/data/halluciguard_users.db
       - key: OPENROUTER_BASE_URL
         value: https://openrouter.ai/api/v1
       - key: OPENROUTER_MODEL
-        value: qwen/qwen-2.5-7b-instruct
+        value: qwen/qwen3-4b
       - key: OPENROUTER_TEMPERATURE
         value: "0.7"
       - key: OPENROUTER_STRESS_TEMPERATURE
@@ -23,15 +29,23 @@ services:
         value: "30"
       - key: OPENROUTER_MAX_RETRIES
         value: "3"
-      - key: ENABLE_JUDGE
+      - key: ALWAYS_VERIFY
+        value: "true"
+      - key: ALLOW_DETECTOR_FAST_PATH
         value: "false"
-      - key: ENABLE_CORRECTOR
+      - key: HG_CORRECTOR_PROVIDER
+        value: openrouter
+      - key: N8N_RETRIEVAL_ENABLED
         value: "false"
       - key: ALLOW_MODEL_DOWNLOADS
         value: "true"
       - key: NLI_MODEL
         value: cross-encoder/nli-deberta-v3-base
       - key: CORS_ORIGINS
-        value: "http://localhost:3000,http://127.0.0.1:3000,https://*.vercel.app"
+        value: "http://localhost:3000,http://127.0.0.1:3000,https://halluciguard-ai.vercel.app"
       - key: OPENROUTER_API_KEY
         sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        value: 88154202029-lrr58hkhqmu7td24ln93i6t21jp8hki2.apps.googleusercontent.com

@@ -10,43 +10,40 @@ The `orchestration/` package is the control plane of HalluciGuard. It coordinate
 
 ## 🎯 Current Active Path
 
-The current active development path intentionally keeps the system smaller while Judge and Corrector are independently validated:
+The production-safe default runs every generated answer through the evidence pipeline:
 
 ```mermaid
 flowchart TD
-    START([START]) --> G[Generate Draft]
-    G --> S[Supervisor]
-    S --> D[Detector]
-    D --> SD[Supervisor]
-    SD -->|LOW / MEDIUM| M[Memory]
-    SD -->|HIGH / VERIFY| V[Verifier]
-    V --> SV[Supervisor]
-    SV -->|Success| M
-    SV -->|Retry budget| R[Verifier Retry]
-    R --> V
-    SV -->|Retries exhausted / failure| F[Terminal Failure]
+    START([START]) --> G[OpenRouter draft]
+    G --> D[Detector]
+    D --> V[Verifier]
+    V --> J[Judge]
+    J -->|ACCEPT| M[Memory boundary]
+    J -->|CORRECT| C[Corrector]
+    C --> R[Re-verifier]
+    R --> J
+    J -->|REJECT| X[Reject]
+    J -->|ABSTAIN| H[Human review]
+    X --> M
+    H --> M
     M --> E([END])
-    F --> E
-
-    J[Judge] -. disabled .- S
-    C[Corrector] -. disabled .- S
 ```
 
 ### Active components
 
-- Base LLM / draft generation — under live provider validation.
+- OpenRouter Base LLM / draft generation.
 - Detector Agent.
 - Verifier Agent.
+- Judge Agent.
+- Corrector Agent (OpenRouter-backed by default).
+- Re-verifier.
 - Memory Agent.
 - LangGraph Supervisor.
 - Structured Inter-Agent Bus.
 
-### Disabled components
-
-- Judge Agent — retained but not executed.
-- Corrector Agent — retained but not executed.
-
-This is deliberate. The graph must never manufacture Judge/Corrector output merely to make a demo look complete.
+The n8n retrieval workflow is currently paused. Retrieval, reranking, NLI, and
+scoring run through the Python Verifier path. A detector fast path exists only
+as an explicit operator opt-in; production defaults to full verification.
 
 ---
 
@@ -67,7 +64,7 @@ It controls:
 
 It does **not** determine whether a factual claim is true.
 
-That job belongs to the Verifier and, in the future five-agent graph, the Judge.
+That job belongs to the Verifier and Judge.
 
 ---
 
@@ -147,8 +144,9 @@ A generation failure must stop the trust pipeline cleanly. Detector must never r
 
 The existing `DetectorAgent.detect(user_query, draft_response)` contract is reused.
 
-- LOW / MEDIUM → fast path.
-- HIGH / VERIFY → Verifier.
+- All risk levels → Verifier by default.
+- A LOW-risk fast path is available only when `ALLOW_DETECTOR_FAST_PATH=true`
+  and `ALWAYS_VERIFY=false` are both set deliberately.
 
 ### Verifier
 
@@ -169,11 +167,11 @@ Retries are bounded by configuration.
 Conceptually:
 
 ```text
-Verifier failure
+Judge requests another verification
       ↓
 retry_count < MAX_RETRIES ?
       ├── yes → Verifier again
-      └── no  → terminal failure
+      └── no  → human review
 ```
 
 There must never be an infinite verification loop.
@@ -219,7 +217,7 @@ The execution should also expose:
 - bus messages;
 - terminal status.
 
-This trace is intended to become the backend source for the future frontend execution studio.
+This trace is the backend source for the authenticated frontend verification view.
 
 ---
 
@@ -246,7 +244,8 @@ Example product request:
 
 Backward-compatible internal testing can supply an existing `llm_response` instead of invoking the Base LLM.
 
-The response should include structured generation, Detector, Verifier and Memory information plus trace/error metadata.
+The response includes structured generation, Detector, Verifier, Judge,
+Corrector, Re-verifier, and Memory information plus trace/error metadata.
 
 ---
 
@@ -268,34 +267,14 @@ A deterministic routing test is not a real production E2E test.
 The strongest real E2E milestone for the current active graph is:
 
 ```text
-Base LLM
-  ↓
-Detector
-  ↓
-Verifier (when required)
-  ↓
-Memory
-  ↓
-END
+Base LLM → Detector → Verifier → Judge
+                              ├─ ACCEPT → Memory
+                              └─ CORRECT → Corrector → Re-verifier → Judge
 ```
 
 ---
 
-## 🗺️ Current vs Target Architecture
-
-### Current
-
-```text
-Base LLM
-   ↓
-Supervisor
-   ↓
-Detector
-   ├── fast path → Memory
-   └── verify → Verifier → Memory
-```
-
-### Target
+## 🗺️ Active Architecture
 
 ```text
 Base LLM
@@ -316,7 +295,9 @@ Judge
         Memory
 ```
 
-Judge and Corrector will be returned to the active graph only after their separate runtime and semantic validation is complete.
+Judge and Corrector are active. Their failures and exhausted retry budgets fail
+closed to rejection or human review, and every terminal outcome crosses the
+Memory boundary for audit without persisting unverified facts.
 
 ---
 
@@ -346,12 +327,13 @@ Bounded Retry            ✅
 Trace / Audit             ✅
 Active Detector           ✅
 Active Verifier           ✅
+Active Judge              ✅
+Active Corrector          ✅ OpenRouter generator
+Active Re-verifier        ✅
 Active Memory             ✅
-Base LLM integration      🟡 Live provider validation pending
-Judge in graph            ❌ disabled
-Corrector in graph        ❌ disabled
-Browser E2E               🔜 pending
-Production deployment     🔜 pending
+Base LLM integration      ✅ OpenRouter configuration required
+Frontend integration      ✅ marketing + authenticated chat workspace
+n8n retrieval             ⏸ paused
 ```
 
 ---

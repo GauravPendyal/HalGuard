@@ -3,7 +3,7 @@ Step 9 — Canonical End-to-End Orchestration Integration Test Suite.
 
 Verifies:
   A. Verifier receives generated LLM response (not user query).
-  B. Detector LOW risk routes to ACCEPT (fast path).
+  B. Detector LOW risk routes to VERIFIER by default; fast path is explicit opt-in.
   C. Detector HIGH/MEDIUM risk routes to VERIFIER.
   D. Detector operator override ALWAYS_VERIFY=true.
   E. Judge ACCEPT route -> memory.
@@ -142,7 +142,7 @@ async def test_verifier_receives_llm_response_not_user_query(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_detector_low_risk_routes_to_accept(monkeypatch):
-    """Low risk detection must route to 'accept' and bypass verification."""
+    """Explicitly enabled low-risk fast path may bypass verification."""
     class StubDetector:
         def detect(self, query, response):
             return {
@@ -158,6 +158,7 @@ async def test_detector_low_risk_routes_to_accept(monkeypatch):
         lambda *a, **k: StubDetector(),
     )
     monkeypatch.setenv("ALWAYS_VERIFY", "false")
+    monkeypatch.setenv("ALLOW_DETECTOR_FAST_PATH", "true")
 
     state = make_base_state()
     res = await _detector_node(state)
@@ -166,6 +167,34 @@ async def test_detector_low_risk_routes_to_accept(monkeypatch):
     assert res["verification_status"] == "detector_safe_fast_path"
     assert res["detector_result"]["risk_level"] == "LOW"
     assert _detector_route(res) == "accept"
+
+
+@pytest.mark.asyncio
+async def test_detector_low_risk_verifies_by_default(monkeypatch):
+    """The safe production default sends even LOW-risk drafts to evidence verification."""
+    class StubDetector:
+        def detect(self, query, response):
+            return {
+                "hallucination_probability": 0.08,
+                "confidence_score": 0.92,
+                "risk_level": "LOW",
+                "next_action": "Accept",
+                "model_source": "halueval-distilbert",
+                "status": "completed",
+            }
+
+    monkeypatch.setattr(
+        "agents.detector_agent.detector.DetectorAgent",
+        lambda *a, **k: StubDetector(),
+    )
+    monkeypatch.delenv("ALLOW_DETECTOR_FAST_PATH", raising=False)
+    monkeypatch.delenv("ALWAYS_VERIFY", raising=False)
+
+    res = await _detector_node(make_base_state())
+
+    assert res["route"] == "verify"
+    assert res["verification_status"] == "verification_required"
+    assert _detector_route(res) == "verifier"
 
 
 # ===========================================================================
@@ -269,6 +298,7 @@ async def test_corrector_node_invoked_via_canonical_contract(monkeypatch):
         "agents.corrector_agent.corrector.CorrectorAgent",
         MockCorrectorAgent,
     )
+    monkeypatch.setenv("HG_CORRECTOR_PROVIDER", "local")
 
     req = CorrectionRequest(
         execution_id="ex-100",
@@ -819,4 +849,3 @@ def test_real_corrector_agent_fails_closed_without_model():
     assert result.corrected_text == "Python was created by Elon Musk."
     assert result.validation_status in ("unvalidated", "warning")
     assert result.status in ("degraded", "terminated_unresolved")
-

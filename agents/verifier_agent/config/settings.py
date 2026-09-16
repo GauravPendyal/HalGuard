@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     gate_use_bge: bool = True
 
     # -- n8n Retrieval Service V2 --
+    # Keep the library default compatible with the verifier's retrieval
+    # contract and hermetic tests. Deployments that have paused n8n disable it
+    # explicitly with N8N_RETRIEVAL_ENABLED=false (see render.yaml/.env.example).
     n8n_retrieval_enabled: bool = True
     n8n_retrieval_webhook_url: str = "https://manjusogala.app.n8n.cloud/webhook/halluciguard-verify-v2"
     n8n_health_webhook_url: str = "https://manjusogala.app.n8n.cloud/webhook/halluciguard-health"

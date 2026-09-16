@@ -1,8 +1,15 @@
 import json
 import os
 import sys
+import tempfile
 import pytest
 from fastapi.testclient import TestClient
+
+os.environ.setdefault("JWT_SECRET", "test-only-jwt-secret-with-more-than-32-characters")
+os.environ.setdefault(
+    "AUTH_DB_PATH",
+    os.path.join(tempfile.gettempdir(), f"halluciguard-auth-tests-{os.getpid()}.db"),
+)
 
 root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if root_dir not in sys.path:
