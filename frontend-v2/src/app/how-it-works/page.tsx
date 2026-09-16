@@ -50,7 +50,7 @@ function SectionHeading({
 
 interface Step {
   Icon: React.ElementType;
-  owner: "n8n" | "Python" | "Router";
+  owner: "Python" | "Router";
   name: string;
   body: string;
 }
@@ -60,7 +60,7 @@ const STEPS: Step[] = [
     Icon: ShieldAlert,
     owner: "Router",
     name: "Detect risk",
-    body: "A first-pass detector reads the answer and estimates hallucination risk. Low-risk answers are accepted on a fast path — and we tell you the verifier never ran. Elevated risk triggers the full pipeline.",
+    body: "A first-pass detector reads the answer and estimates hallucination risk. Production sends every answer into evidence verification; an explicit operator-only fast path remains available for controlled testing.",
   },
   {
     Icon: ScissorsLineDashed,
@@ -70,9 +70,9 @@ const STEPS: Step[] = [
   },
   {
     Icon: Network,
-    owner: "n8n",
+    owner: "Python",
     name: "Retrieve evidence",
-    body: "n8n handles retrieval and orchestration only: domain routing, source calls, fallback, and de-duplication. It gathers candidate evidence — it never decides the verdict.",
+    body: "The active Python verifier performs domain routing, source calls, fallback, and de-duplication. The paused n8n workflow is not part of the current request path.",
   },
   {
     Icon: Layers,
@@ -95,7 +95,6 @@ const STEPS: Step[] = [
 ];
 
 const OWNER_STYLE: Record<Step["owner"], string> = {
-  n8n: "border-conflicted/35 bg-conflicted-deep text-conflicted",
   Python: "border-signal/30 bg-signal-deep text-signal-bright",
   Router: "border-line-strong bg-panel-inset text-ink-muted",
 };

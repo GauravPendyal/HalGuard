@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Dict, List, Literal, Optional
 
@@ -26,21 +27,29 @@ from .auth import (
 from .graph import run_verification
 from .runtime_validation import validate_orchestration_startup
 
+logger = logging.getLogger(__name__)
+
+
+class ConversationTurnRequest(BaseModel):
+    """One bounded, unprivileged turn of user-visible conversation context."""
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=20_000)
+
 
 class VerificationRequest(BaseModel):
     """Request model for the verification endpoint."""
-    user_query: str = Field(min_length=1, description="The user's prompt or question to verify.")
+    user_query: str = Field(min_length=1, max_length=20_000, description="The user's prompt or question to verify.")
     generation_mode: Literal["normal", "stress_test"] = Field(default="normal", description="'normal' or 'stress_test'.")
-    llm_response: Optional[str] = Field(default=None, description="Optional pre-supplied draft response.")
-    conversation_history: List[Dict[str, str]] = Field(default_factory=list, description="Optional conversation context.")
-    domain: str = Field(default="general", description="Verification domain (e.g. general, biomedical, finance).")
-    request_id: Optional[str] = Field(default=None, description="Optional caller correlation ID.")
+    llm_response: Optional[str] = Field(default=None, max_length=50_000, description="Optional pre-supplied draft response.")
+    conversation_history: List[ConversationTurnRequest] = Field(default_factory=list, max_length=30, description="Optional conversation context.")
+    domain: str = Field(default="general", min_length=1, max_length=64, description="Verification domain (e.g. general, biomedical, finance).")
+    request_id: Optional[str] = Field(default=None, max_length=128, description="Optional caller correlation ID.")
 
 
 class RegisterRequest(BaseModel):
     """Request model for user registration."""
     email: str = Field(min_length=3, description="User email address")
-    password: str = Field(min_length=6, description="User password (min 6 characters)")
+    password: str = Field(min_length=8, description="User password (min 8 characters)")
     name: Optional[str] = Field(default=None, description="User display name")
 
 
@@ -64,17 +73,26 @@ class SaveHistoryRequest(BaseModel):
 app = FastAPI(
     title="HalluciGuard Verification Engine",
     version="2.0.0",
-    description="Production LangGraph supervisor orchestrating OpenRouter Base LLM, Detector, Verifier, and Memory agents with JWT Auth.",
+    description="Production LangGraph supervisor orchestrating OpenRouter, Detector, Verifier, Judge, Corrector, Re-verifier, and Memory with JWT authentication.",
 )
 
-# Configure CORS for Vercel Frontend, Mobile Devices, and Local Development
+def _cors_origins() -> List[str]:
+    configured = os.environ.get(
+        "CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"
+    )
+    return [origin.strip() for origin in configured.split(",") if origin.strip() and "*" not in origin]
+
+
+# Same-origin deployment uses the Next.js proxy. These exact origins support local
+# development and explicitly configured separate frontend deployments.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins(),
+    allow_origin_regex=os.environ.get("CORS_ORIGIN_REGEX") or None,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-    expose_headers=["*"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "X-Request-ID"],
+    expose_headers=["X-Request-ID"],
 )
 
 
@@ -131,7 +149,7 @@ async def auth_register(req: RegisterRequest) -> Dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Registration failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Registration service failed") from exc
 
 
 @app.post("/auth/login")
@@ -151,7 +169,7 @@ async def auth_login(req: LoginRequest) -> Dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Login failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Login service failed") from exc
 
 
 @app.post("/auth/google")
@@ -167,9 +185,11 @@ async def auth_google(req: GoogleAuthRequest) -> Dict[str, Any]:
             "user": user_dict,
         }
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Google authentication failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail="Google authentication failed") from exc
 
 
 @app.get("/auth/me")
@@ -241,7 +261,7 @@ async def root() -> Dict[str, Any]:
             "me": "/auth/me",
             "logout": "/auth/logout",
         },
-        "frontend_url": "https://frontend-alpha-umber-63.vercel.app",
+        "frontend_url": "https://halluciguard-ai.vercel.app",
     }
 
 
@@ -263,7 +283,7 @@ async def health(deep: bool = False) -> Dict[str, Any]:
                 "reverifier",
                 "memory",
             ],
-            "disabled_agents": {},
+            "disabled_agents": [],
         }
 
     validation = validate_orchestration_startup()
@@ -272,9 +292,13 @@ async def health(deep: bool = False) -> Dict[str, Any]:
     except Exception as exc:
         base_llm = {"available": False, "provider": "openrouter", "error": str(exc)}
 
+    llm_ready = all(
+        base_llm.get(field) is True
+        for field in ("provider_configured", "model_configured", "key_configured", "endpoint_reachable")
+    )
     return {
-        "status": "healthy" if validation.get("ok") and base_llm.get("available") else "degraded",
-        "backend_status": "healthy" if validation.get("ok") and base_llm.get("available") else "degraded",
+        "status": "healthy" if validation.get("ok") and llm_ready else "degraded",
+        "backend_status": "healthy" if validation.get("ok") and llm_ready else "degraded",
         "environment": os.environ.get("HALLUCIGUARD_ENV", "production"),
         "engine": "langgraph_production_supervisor",
         "active_agents": [
@@ -286,10 +310,13 @@ async def health(deep: bool = False) -> Dict[str, Any]:
             "reverifier",
             "memory",
         ],
-        "disabled_agents": {},
+        "disabled_agents": [],
         "base_llm": base_llm,
         "detector": validation.get("detector", {}),
         "verifier": validation.get("verifier", {}),
+        "judge": validation.get("judge", {}),
+        "corrector": validation.get("corrector", {}),
+        "reverifier": validation.get("reverifier", {}),
         "memory": validation.get("memory", {}),
         "runtime_validation": validation,
     }
@@ -308,6 +335,19 @@ def _total_latency_ms(result: Dict[str, Any]) -> int:
     return sum(
         int(event.get("latency_ms", 0) or 0) for event in result.get("trace", [])
     )
+
+
+def _final_verifier_view(result: Dict[str, Any]) -> Dict[str, Any]:
+    """Return claim data for the answer that is actually delivered to the user."""
+    legacy = dict(result.get("verifier") or {})
+    reverification = result.get("reverification_result") or {}
+    canonical = reverification.get("verifier_result") or result.get("verifier_result") or {}
+    if canonical:
+        legacy["claim_evidence"] = canonical.get("claim_reports", [])
+        legacy["overall_evidence_confidence"] = canonical.get("overall_confidence", 0.0)
+        legacy["query_id"] = canonical.get("query_id", legacy.get("query_id"))
+        legacy["domain"] = canonical.get("domain", legacy.get("domain"))
+    return legacy
 
 
 async def _execute_verification(
@@ -334,9 +374,10 @@ async def _execute_verification(
             domain=request.domain,
             request_id=request.request_id,
             generation_mode=request.generation_mode,
-            conversation_history=request.conversation_history,
+            conversation_history=[turn.model_dump() for turn in request.conversation_history],
         )
-        claims_ev = (result.get("verifier") or {}).get("claim_evidence", [])
+        verifier_view = _final_verifier_view(result)
+        claims_ev = verifier_view.get("claim_evidence", [])
         if claims_ev:
             has_c = any("contradict" in str(c.get("verdict", "")).lower() or "hallucinat" in str(c.get("verdict", "")).lower() for c in claims_ev)
             has_v = any(str(c.get("verdict", "")).lower() in ("verified", "supported", "verdictlabel.verified") or (str(c.get("verdict", "")).lower().startswith("verif") and "unverif" not in str(c.get("verdict", "")).lower()) for c in claims_ev)
@@ -348,14 +389,14 @@ async def _execute_verification(
         resp = {
             "execution_id": result.get("execution_id"),
             "request_id": result.get("request_id"),
-            "generation": result.get("generation") or result.get("base_llm"),
+            "generation": (result.get("base_llm") or {}).get("model"),
             "draft_response": result.get("draft_response") or result.get("llm_response"),
             "final_response": result.get("final_response") or result.get("draft_response", result.get("llm_response")),
-            "terminal_status": result.get("terminal_status", "accepted"),
+            "terminal_status": result.get("terminal_status") or "human_review",
             "verification_status": derived_status,
             "total_latency_ms": _total_latency_ms(result),
             "detector": result.get("detector"),
-            "verifier": result.get("verifier"),
+            "verifier": verifier_view,
             "memory": result.get("memory"),
             "active_agents": result.get("active_agents") or [
                 "base_llm",
@@ -366,7 +407,7 @@ async def _execute_verification(
                 "reverifier",
                 "memory",
             ],
-            "disabled_agents": result.get("disabled_agents") or {},
+            "disabled_agents": result.get("disabled_agents") if result.get("disabled_agents") is not None else [],
             "judge": result.get("judge") or result.get("judge_result"),
             "corrector": result.get("corrector") or result.get("correction_result"),
             "reverification": result.get("reverification_result"),
@@ -390,13 +431,14 @@ async def _execute_verification(
                 try:
                     save_user_history(user["id"], request.user_query, resp)
                 except Exception:
-                    pass
+                    logger.exception("Failed to persist verification history")
 
         return resp
     except Exception as exc:
+        logger.exception("Verification pipeline failed")
         raise HTTPException(
             status_code=500,
-            detail=f"Verification engine failed: {type(exc).__name__}: {exc}",
+            detail="Verification engine failed. Please retry or check service health.",
         ) from exc
 
 

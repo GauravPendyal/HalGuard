@@ -2,10 +2,9 @@
  * Runtime configuration, sourced entirely from public environment variables.
  *
  * Everything here is browser-exposed by design (NEXT_PUBLIC_*). No secret — the
- * OAuth client secret, OpenRouter / Tavily / n8n / NVD keys, any backend token —
- * belongs in this file or anywhere in the client bundle. The verification API is
- * called directly from the browser; the Google sign-in uses the Identity Services
- * client flow, which needs only a public client ID.
+ * OAuth client secret, OpenRouter / Tavily / n8n / NVD keys, or server JWT secret
+ * belongs in this file or anywhere in the client bundle. Production requests use
+ * same-origin Next.js route handlers; Google sign-in only needs a public client ID.
  */
 
 function readString(value: string | undefined, fallback: string): string {
@@ -36,7 +35,7 @@ function getApiBaseUrl(): string {
     const isLocalhost =
       window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1";
     if (!isLocalhost) {
-      // Use same-origin relative path (Next.js server-side rewrites proxy to backend)
+      // Use same-origin route handlers, which proxy to the FastAPI backend.
       return "";
     }
   }
@@ -56,13 +55,6 @@ export const config = {
    * and the whole product still works anonymously — never a broken button.
    */
   googleClientId: readString(process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID, ""),
-
-  /**
-   * Dev-only mock adapter. Guarded so it can never satisfy a production path:
-   * even if the flag is set, `mockEnabled` is false in a production build.
-   * FORCED FALSE per user instruction: DO NOT use the mock.
-   */
-  mockEnabled: false,
 
   isProduction: process.env.NODE_ENV === "production",
 } as const;

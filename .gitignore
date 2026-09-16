@@ -40,6 +40,8 @@ models_cache/
 *.sqlite
 *.sqlite3
 verification_cache.db
+**/node_modules/
+**/.next/
 
 # Logs
 *.log

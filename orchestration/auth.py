@@ -25,26 +25,33 @@ import requests
 
 # Path configuration
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-DATA_DIR = os.path.join(PROJECT_ROOT, "data")
-DB_PATH = os.path.join(DATA_DIR, "halluciguard_users.db")
-
-# JWT configuration — server-side only secret
-JWT_SECRET = os.environ.get(
-    "JWT_SECRET", "halluciguard-secure-jwt-key-2026-production-supervisor"
+DB_PATH = os.path.abspath(
+    os.environ.get("AUTH_DB_PATH", os.path.join(PROJECT_ROOT, "data", "halluciguard_users.db"))
 )
+DATA_DIR = os.path.dirname(DB_PATH)
+
+# JWT configuration — server-side only secret, with no checked-in fallback.
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24 * 7  # 7 days
 
 # Google OAuth Configuration
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
-GOOGLE_PROJECT_ID = os.environ.get("GOOGLE_PROJECT_ID", "")
+
+
+def _jwt_secret() -> str:
+    secret = os.environ.get("JWT_SECRET", "").strip()
+    if len(secret) < 32:
+        raise RuntimeError("JWT_SECRET must be configured with at least 32 characters")
+    return secret
 
 
 def _get_db_connection() -> sqlite3.Connection:
     os.makedirs(DATA_DIR, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=15)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.execute("PRAGMA journal_mode = WAL")
     return conn
 
 
@@ -96,20 +103,6 @@ def init_auth_db() -> None:
         )
         conn.commit()
 
-        # Seed default demo account if not already present
-        cursor.execute("SELECT id FROM users WHERE email = ?", ("demo@halluciguard.ai",))
-        if not cursor.fetchone():
-            salt = secrets.token_hex(16)
-            pwd_hash = _hash_password("password123", salt)
-            now = datetime.datetime.now(timezone.utc).isoformat()
-            cursor.execute(
-                """
-                INSERT INTO users (id, email, name, password_salt, password_hash, picture, auth_provider, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (str(uuid.uuid4()), "demo@halluciguard.ai", "Demo User", salt, pwd_hash, None, "local", now),
-            )
-            conn.commit()
     finally:
         conn.close()
 
@@ -135,13 +128,13 @@ def create_jwt_token(
     }
     if picture:
         payload["picture"] = picture
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode(payload, _jwt_secret(), algorithm=JWT_ALGORITHM)
 
 
 def decode_jwt_token(token: str) -> Dict[str, Any]:
     """Decode and validate a signed JWT token."""
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        return jwt.decode(token, _jwt_secret(), algorithms=[JWT_ALGORITHM])
     except jwt.ExpiredSignatureError:
         raise ValueError("Token has expired")
     except jwt.InvalidTokenError as exc:
@@ -153,8 +146,8 @@ def register_user(email: str, password: str, name: Optional[str] = None) -> Tupl
     email_clean = email.strip().lower()
     if not email_clean or "@" not in email_clean:
         raise ValueError("Valid email address is required")
-    if not password or len(password) < 6:
-        raise ValueError("Password must be at least 6 characters long")
+    if not password or len(password) < 8:
+        raise ValueError("Password must be at least 8 characters long")
 
     display_name = (name or "").strip() or email_clean.split("@")[0]
     user_id = str(uuid.uuid4())
@@ -241,23 +234,33 @@ def authenticate_google_user(credential: str) -> Tuple[Dict[str, Any], str]:
     # Verify ID token via Google's tokeninfo service
     try:
         resp = requests.get(
-            f"https://oauth2.googleapis.com/tokeninfo?id_token={credential}",
+            "https://oauth2.googleapis.com/tokeninfo",
+            params={"id_token": credential},
             timeout=10,
         )
     except Exception as exc:
-        raise ValueError(f"Failed to connect to Google OAuth validation service: {exc}")
+        raise ValueError("Could not reach Google OAuth validation service") from exc
 
     if resp.status_code != 200:
-        raise ValueError(f"Google token validation failed: {resp.text}")
+        raise ValueError("Google token validation failed")
 
     google_data = resp.json()
 
     # Validate audience matches our Google Client ID
     aud = google_data.get("aud")
     azp = google_data.get("azp")
-    valid_auds = {GOOGLE_CLIENT_ID, GOOGLE_PROJECT_ID}
-    if aud not in valid_auds and azp not in valid_auds and GOOGLE_CLIENT_ID not in str(aud):
+    if not GOOGLE_CLIENT_ID:
+        raise RuntimeError("GOOGLE_CLIENT_ID is not configured")
+    if aud != GOOGLE_CLIENT_ID:
         raise ValueError("Google token audience mismatch")
+    if azp and azp != GOOGLE_CLIENT_ID:
+        raise ValueError("Google token authorized-party mismatch")
+
+    issuer = google_data.get("iss")
+    if issuer not in {"accounts.google.com", "https://accounts.google.com"}:
+        raise ValueError("Google token issuer mismatch")
+    if str(google_data.get("email_verified", "")).lower() not in {"true", "1"}:
+        raise ValueError("Google account email is not verified")
 
     email = (google_data.get("email") or "").strip().lower()
     if not email:

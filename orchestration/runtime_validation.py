@@ -131,18 +131,68 @@ def validate_memory_configuration() -> ComponentCheckResult:
         )
 
 
+def validate_judge_configuration() -> ComponentCheckResult:
+    """Validate that the canonical Judge is importable."""
+    try:
+        from agents.judge_agent.judge_agent import JudgeAgent
+        return ComponentCheckResult(
+            ok=callable(JudgeAgent),
+            component="judge",
+            detail="Canonical Judge agent is available.",
+            metadata={"implementation": "agents.judge_agent.judge_agent.JudgeAgent"},
+        )
+    except Exception as exc:
+        return ComponentCheckResult(
+            ok=False,
+            component="judge",
+            detail=f"{type(exc).__name__}: {exc}",
+            metadata={"error": str(exc)},
+        )
+
+
+def validate_corrector_configuration() -> ComponentCheckResult:
+    """Validate the configured correction generator without loading model weights."""
+    provider = os.environ.get("HG_CORRECTOR_PROVIDER", "openrouter").strip().lower()
+    try:
+        from agents.corrector_agent.corrector import CorrectorAgent
+        if provider == "openrouter":
+            key_ready = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
+            return ComponentCheckResult(
+                ok=key_ready and callable(CorrectorAgent),
+                component="corrector",
+                detail="OpenRouter-backed Corrector is ready." if key_ready else "OPENROUTER_API_KEY is required by the configured Corrector.",
+                metadata={"provider": provider, "key_configured": key_ready},
+            )
+        from agents.corrector_agent.corrector.config import CorrectorConfig
+        from agents.corrector_agent.corrector.model_client import resolve_model
+        status = resolve_model(CorrectorConfig.from_env())
+        return ComponentCheckResult(
+            ok=bool(status.available),
+            component="corrector",
+            detail=status.detail or "Local Corrector model is available.",
+            metadata={"provider": "local", "model_status": status.model_dump()},
+        )
+    except Exception as exc:
+        return ComponentCheckResult(
+            ok=False,
+            component="corrector",
+            detail=f"{type(exc).__name__}: {exc}",
+            metadata={"provider": provider, "error": str(exc)},
+        )
 def validate_orchestration_startup() -> Dict[str, Any]:
     """Run comprehensive validation checks for all production components."""
     openrouter = validate_openrouter_configuration()
     detector = validate_detector_model_reference()
     verifier = validate_verifier_configuration()
+    judge = validate_judge_configuration()
+    corrector = validate_corrector_configuration()
     memory = validate_memory_configuration()
 
-    checks = [openrouter, detector, verifier, memory]
+    checks = [openrouter, detector, verifier, judge, corrector, memory]
     all_ok = all(c.ok for c in checks)
 
-    active_agents = ["base_llm", "detector", "verifier", "memory"]
-    disabled_agents = ["judge", "corrector"]
+    active_agents = ["base_llm", "detector", "verifier", "judge", "corrector", "reverifier", "memory"]
+    disabled_agents: List[str] = []
 
     return {
         "ok": all_ok,
@@ -154,5 +204,8 @@ def validate_orchestration_startup() -> Dict[str, Any]:
         "base_llm": openrouter.metadata,
         "detector": detector.metadata,
         "verifier": verifier.metadata,
+        "judge": judge.metadata,
+        "corrector": corrector.metadata,
+        "reverifier": verifier.metadata,
         "memory": memory.metadata,
     }

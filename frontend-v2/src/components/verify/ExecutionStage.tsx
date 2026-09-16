@@ -24,7 +24,7 @@ function statusPresentation(status: StageStatus | null) {
 }
 
 const OWNER_META = {
-  n8n: { label: "n8n · retrieval", cls: "border-[color:var(--color-conflicted)]/30 text-conflicted bg-[color:var(--color-conflicted-deep)]" },
+  n8n: { label: "n8n · paused", cls: "border-[color:var(--color-conflicted)]/30 text-conflicted bg-[color:var(--color-conflicted-deep)]" },
   python: { label: "python · analysis", cls: "border-line-strong text-ink-muted bg-panel-inset" },
 } as const;
 

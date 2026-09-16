@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from orchestration.graph import (
+    _corrector_route,
     _detector_route,
     _generate_route,
+    _reverifier_route,
     _verifier_route,
     build_verification_graph,
 )
@@ -34,7 +36,7 @@ def test_generate_route_failure():
     assert _generate_route({"route": "error", "llm_response": ""}) == "human_escalation"
 
 
-def test_detector_low_medium_bypass_verifier():
+def test_detector_explicit_fast_path_route():
     assert _detector_route({"route": "accept"}) == "accept"
 
 
@@ -66,6 +68,19 @@ def test_judge_route_accept():
 def test_judge_route_correct():
     from orchestration.graph import _judge_route
     assert _judge_route({"judge_decision": "CORRECT", "active_agents": ["corrector"]}) == "corrector"
+
+
+def test_judge_route_correction_unavailable_fails_closed():
+    from orchestration.graph import _judge_route
+    assert _judge_route({"judge_decision": "CORRECT", "active_agents": []}) == "human_escalation"
+
+
+def test_corrector_and_reverifier_fail_closed_routes():
+    assert _corrector_route({"route": "error"}) == "human_escalation"
+    assert _corrector_route({"correction_result": {"status": "completed"}}) == "reverifier"
+    assert _reverifier_route({"route": "error"}) == "human_escalation"
+    assert _reverifier_route({"reverification_result": {"status": "failed"}}) == "human_escalation"
+    assert _reverifier_route({"reverification_result": {"status": "completed"}}) == "judge"
 
 
 def test_judge_route_verify_again():

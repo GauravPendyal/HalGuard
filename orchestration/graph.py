@@ -202,13 +202,17 @@ async def _detector_node(state: HalluciGuardState) -> dict[str, Any]:
         next_action = str(detector.get("next_action", ""))
         risk_level = str(detector.get("risk_level", "LOW")).upper()
         
-        # Risk gate: LOW -> accept (fast path bypass), MEDIUM/HIGH -> verifier
-        # Operator/debug override: ALWAYS_VERIFY=true forces verification
-        always_verify = os.environ.get("ALWAYS_VERIFY", "false").lower() in ("true", "1")
+        # Verification is the safe default. The detector fast path is an explicit
+        # operator opt-in only; degraded/fallback detector output must never skip evidence.
+        allow_fast_path = os.environ.get("ALLOW_DETECTOR_FAST_PATH", "false").lower() in ("true", "1")
+        always_verify = os.environ.get("ALWAYS_VERIFY", "true").lower() in ("true", "1")
         is_stress = state.get("generation_mode") == "stress_test"
+        detector_degraded = str(detector.get("status", "")).lower() in {"failed", "degraded", "fallback", "unavailable"}
         should_verify = (
             always_verify
+            or not allow_fast_path
             or is_stress
+            or detector_degraded
             or risk_level in {"MEDIUM", "HIGH"}
             or next_action.lower().endswith("verify")
         )
@@ -585,7 +589,7 @@ async def _judge_node(state: HalluciGuardState) -> dict[str, Any]:
         elif decision_val == "CORRECT":
             active = state.get("active_agents")
             if active is not None and "corrector" not in active:
-                route = "memory"
+                route = "human_escalation"
             else:
                 route = "corrector" if corr_attempts < state.get("max_retries", 2) else "reject"
             verification_status = "correction_requested"
@@ -619,6 +623,7 @@ async def _judge_node(state: HalluciGuardState) -> dict[str, Any]:
             "severity": severity_val,
             "correction_request": corr_req,
             "route": route,
+            "terminal_status": "accepted" if decision_val == "ACCEPT" else state.get("terminal_status"),
             "retry_count": new_retry_count,
             "verification_status": verification_status,
             "inter_agent_bus": bus,
@@ -687,6 +692,10 @@ async def _corrector_node(state: HalluciGuardState) -> dict[str, Any]:
             )
 
         def _run_corrector():
+            provider = os.environ.get("HG_CORRECTOR_PROVIDER", "openrouter").strip().lower()
+            if provider == "openrouter":
+                from services.openrouter_corrector import OpenRouterCorrectorGenerator
+                return CorrectorAgent(generator=OpenRouterCorrectorGenerator()).correct(corr_req)
             return CorrectorAgent().correct(corr_req)
 
         corr_res = await asyncio.to_thread(_run_corrector)
@@ -797,7 +806,7 @@ async def _reverifier_node(state: HalluciGuardState) -> dict[str, Any]:
         passed = (
             canonical_v_res.status == ExecutionStatus.COMPLETED
             and remaining_contradictions == 0
-            and (has_verified_claims or len(canonical_v_res.claim_reports) == 0)
+            and has_verified_claims
         )
 
         rev_result = ReverificationResult(
@@ -841,6 +850,23 @@ async def _reverifier_node(state: HalluciGuardState) -> dict[str, Any]:
         return _failure_update(state, "reverifier", exc)
 
 
+def _corrector_route(state: HalluciGuardState) -> str:
+    """Fail closed when correction generation did not complete."""
+    if state.get("route") == "error" or not state.get("correction_result"):
+        return "human_escalation"
+    return "reverifier"
+
+
+def _reverifier_route(state: HalluciGuardState) -> str:
+    """Only return to the Judge after a completed reverification run."""
+    if state.get("route") == "error":
+        return "human_escalation"
+    result = state.get("reverification_result") or {}
+    if str(result.get("status", "")).lower() not in {"completed", "success"}:
+        return "human_escalation"
+    return "judge"
+
+
 def _judge_route(state: HalluciGuardState) -> str:
     """
     Determine the next node after judge arbitration based on the judge's decision.
@@ -865,7 +891,7 @@ def _judge_route(state: HalluciGuardState) -> str:
     elif decision == "CORRECT":
         active = state.get("active_agents")
         if active is not None and "corrector" not in active:
-            return "memory"
+            return "human_escalation"
         # Hard upper bound on correction retries
         corr_attempts = int(state.get("correction_attempt_count", 0))
         max_retries = int(state.get("max_retries", 2))
@@ -1143,11 +1169,21 @@ def build_verification_graph(
             "human_escalation": "human_escalation",
         },
     )
-    graph.add_edge("corrector", "reverifier")
-    graph.add_edge("reverifier", "judge")
-    graph.add_edge("accept", END)
-    graph.add_edge("reject", END)
-    graph.add_edge("human_escalation", END)
+    graph.add_conditional_edges(
+        "corrector",
+        _corrector_route,
+        {"reverifier": "reverifier", "human_escalation": "human_escalation"},
+    )
+    graph.add_conditional_edges(
+        "reverifier",
+        _reverifier_route,
+        {"judge": "judge", "human_escalation": "human_escalation"},
+    )
+    # Every terminal outcome crosses the Memory boundary for an auditable trace;
+    # Memory itself only persists Judge-accepted, verified claims.
+    graph.add_edge("accept", "memory")
+    graph.add_edge("reject", "memory")
+    graph.add_edge("human_escalation", "memory")
     graph.add_edge("memory", END)
 
     return graph.compile()

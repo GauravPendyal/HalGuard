@@ -113,17 +113,15 @@ const STAGE_LABELS: Record<PipelineStageId, string> = {
 };
 
 /**
- * Owner of each stage — the honest n8n-vs-Python split.
- * n8n performs retrieval/orchestration only (retrieval + merge/dedup aggregation).
- * Python owns the judgment stages: BGE reranking, DeBERTa NLI, scoring, verdict,
- * plus the verifier's own pre-retrieval preprocessing. n8n is NEVER the judge.
+ * Owner of each active stage. n8n is paused; Python adapters perform retrieval
+ * and aggregation as well as reranking, NLI, scoring, and formatting.
  */
 const STAGE_OWNER: Record<PipelineStageId, "n8n" | "python"> = {
   domain_validation: "python",
   claim_decomposition: "python",
   query_expansion: "python",
-  retrieval: "n8n",
-  aggregation: "n8n",
+  retrieval: "python",
+  aggregation: "python",
   reranking: "python",
   nli: "python",
   scoring: "python",

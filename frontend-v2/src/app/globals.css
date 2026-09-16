@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
 
 /* ============================================================================
    HalluciGuard — "ChatGPT-style" minimal design system
@@ -28,6 +29,26 @@
   --color-accent-hover: #FACC15;
   --color-accent-soft: rgba(234,179,8,0.10);
   --color-accent-ring: rgba(234,179,8,0.25);
+
+  /* --- Integrated ChatUI surfaces --- */
+  --color-chatgpt-darkBg: #212121;
+  --color-chatgpt-sidebarDark: #171717;
+  --color-chatgpt-sidebarHoverDark: #292929;
+  --color-chatgpt-cardDark: #2f2f2f;
+  --color-chatgpt-borderDark: #424242;
+  --color-chatgpt-inputDark: #2f2f2f;
+  --color-chatgpt-textDark: #ececec;
+  --color-chatgpt-textMutedDark: #b4b4b4;
+  --color-chatgpt-accentGreen: #318a72;
+  --color-chatgpt-accentGreenHover: #286f5d;
+  --color-chatgpt-lightBg: #ffffff;
+  --color-chatgpt-sidebarLight: #f7f8f6;
+  --color-chatgpt-sidebarHoverLight: #e9eeeb;
+  --color-chatgpt-cardLight: #f4f6f4;
+  --color-chatgpt-borderLight: #dde3df;
+  --color-chatgpt-inputLight: #f4f6f4;
+  --color-chatgpt-textLight: #14231f;
+  --color-chatgpt-textMutedLight: #62716c;
 
   /* --- Verdict Semantics --- */
   --color-verified: #22C55E;

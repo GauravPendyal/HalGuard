@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import "./marketing.css";
 import { AppShell } from "@/components/shell/AppShell";
 import { AuthProvider } from "@/lib/auth/AuthContext";
 import { ToastProvider } from "@/components/ui/Toast";
@@ -36,8 +37,8 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0D0D0D",
-  colorScheme: "dark",
+  themeColor: "#f8faf8",
+  colorScheme: "light dark",
   width: "device-width",
   initialScale: 1,
 };

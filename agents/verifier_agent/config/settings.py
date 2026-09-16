@@ -69,7 +69,7 @@ class Settings(BaseSettings):
     gate_use_bge: bool = True
 
     # -- n8n Retrieval Service V2 --
-    n8n_retrieval_enabled: bool = True
+    n8n_retrieval_enabled: bool = False
     n8n_retrieval_webhook_url: str = "https://manjusogala.app.n8n.cloud/webhook/halluciguard-verify-v2"
     n8n_health_webhook_url: str = "https://manjusogala.app.n8n.cloud/webhook/halluciguard-health"
     n8n_auth_mode: str = "header"  # "header" (default) or "none"

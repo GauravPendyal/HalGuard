@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { VerifyWorkspace } from "@/components/verify/VerifyWorkspace";
+import { ChatWorkspace } from "@/features/chatui/ChatWorkspace";
 
 export const metadata: Metadata = {
   title: "Verify a claim · HalluciGuard",
@@ -8,5 +8,5 @@ export const metadata: Metadata = {
 };
 
 export default function VerifyPage() {
-  return <VerifyWorkspace />;
+  return <ChatWorkspace />;
 }

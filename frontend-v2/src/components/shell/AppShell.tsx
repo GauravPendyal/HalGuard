@@ -17,8 +17,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     }
   }, [pathname, status, router]);
 
-  // Don't show sidebar on how-it-works page to keep it clean
-  if (pathname === "/how-it-works") {
+  // Never render protected content while authentication is unresolved.
+  if (pathname.startsWith("/app") && (status === "loading" || status === "anonymous")) {
+    return <div className="flex h-screen w-full bg-background" />;
+  }
+
+  // Standalone experiences provide their own navigation.
+  if (pathname === "/how-it-works" || pathname === "/app") {
     return (
       <div className="flex min-h-dvh flex-col bg-background">
         <main className="flex-1">
@@ -28,8 +33,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Hide the AppShell layout (Sidebar) entirely on the public landing page 
-  // since the user wants a clean, standalone sign-in screen.
+  // The public marketing page owns its navigation and authentication dialog.
   if (pathname === "/") {
     return (
       <main className="flex min-h-dvh flex-col bg-background">
@@ -38,7 +42,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     );
   }
 
-  // Wait for auth to settle before rendering the protected shell
+  // Wait for auth to settle before rendering other protected routes.
   if (status === "loading" || status === "anonymous") {
     return <div className="flex h-screen w-full bg-background" />;
   }
