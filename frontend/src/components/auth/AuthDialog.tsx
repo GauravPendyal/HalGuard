@@ -61,7 +61,24 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
 
   return (
     <div
-      className="fixed inset-0 z-[100] grid place-items-center bg-[#102d27]/40 px-4 py-8 backdrop-blur-md"
+      className="auth-overlay fixed inset-0 z-[999999] grid place-items-center bg-[#102d27]/60 px-4 py-8 backdrop-blur-md"
+      style={{
+        position: "fixed",
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: 999999,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: "rgba(16, 45, 39, 0.65)",
+        backdropFilter: "blur(12px)",
+        WebkitBackdropFilter: "blur(12px)",
+        padding: "16px",
+        boxSizing: "border-box",
+        overflowY: "auto",
+      }}
       role="presentation"
       onMouseDown={onClose}
     >
@@ -69,14 +86,27 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
-        className="relative w-full max-w-md rounded-[28px] border border-[#173f36]/15 bg-[#fbfaf6] p-6 text-[#173f36] shadow-2xl sm:p-8"
+        className="auth-modal-card relative w-full max-w-md rounded-[28px] border border-[#173f36]/15 bg-[#fbfaf6] p-6 text-[#173f36] shadow-2xl sm:p-8"
+        style={{
+          position: "relative",
+          width: "100%",
+          maxWidth: "440px",
+          borderRadius: "24px",
+          backgroundColor: "#fbfaf6",
+          border: "1px solid rgba(23, 63, 54, 0.18)",
+          boxShadow: "0 25px 60px -15px rgba(10, 35, 29, 0.45)",
+          padding: "32px 28px",
+          color: "#173f36",
+          boxSizing: "border-box",
+          zIndex: 1000000,
+        }}
         onMouseDown={(event) => event.stopPropagation()}
       >
         <button
           type="button"
           aria-label="Close authentication"
           onClick={onClose}
-          className="absolute right-5 top-5 rounded-full p-2 text-[#62716c] transition hover:bg-[#e7efeb] hover:text-[#173f36]"
+          className="absolute right-5 top-5 rounded-full p-2 text-[#62716c] transition hover:bg-[#e7efeb] hover:text-[#173f36] cursor-pointer"
         >
           <X className="h-5 w-5" />
         </button>
@@ -127,7 +157,7 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
                     setMode(item);
                     setErrorMessage(null);
                   }}
-                  className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                  className={`rounded-lg px-3 py-2 text-xs font-semibold transition cursor-pointer ${
                     mode === item
                       ? "bg-white text-[#173f36] shadow-sm"
                       : "text-[#697872]"
@@ -193,9 +223,23 @@ export function AuthDialog({ open, onClose }: AuthDialogProps) {
                 )}
               </button>
             </form>
+            <div className="relative my-4 flex items-center justify-center">
+              <div className="w-full border-t border-[#173f36]/10" />
+              <span className="absolute bg-[#fbfaf6] px-3 text-[10px] font-semibold uppercase tracking-[0.1em] text-[#7a8883]">
+                or explore directly
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={enterWorkspace}
+              className="flex w-full items-center justify-center gap-2 rounded-xl border border-[#246b59]/30 bg-[#eef5f1] px-4 py-2.5 text-xs font-semibold text-[#173f36] transition hover:bg-[#dceae1] cursor-pointer"
+            >
+              Continue to Chat UI as Guest <ArrowRight className="h-3.5 w-3.5" />
+            </button>
           </>
         )}
       </section>
     </div>
+
   );
 }

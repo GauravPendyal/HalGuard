@@ -1,4 +1,4 @@
-﻿@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Instrument+Serif:ital@0;1&display=swap');
 
 :root {
   --mint-50: #edf4ef;
@@ -1137,8 +1137,10 @@ footer { position: relative; min-height: 620px; padding: 100px 0 30px; overflow:
   background: rgba(252, 254, 252, .94);
   border-bottom: 1px solid rgba(22, 62, 53, .08);
   backdrop-filter: blur(18px);
+  pointer-events: auto !important;
 }
 .nav {
+  pointer-events: auto !important;
   width: min(1640px, calc(100% - 72px));
   min-height: 120px;
   padding: 0;
@@ -1201,6 +1203,9 @@ footer { position: relative; min-height: 620px; padding: 100px 0 30px; overflow:
   color: #173f36;
   box-shadow: 0 4px 10px rgba(22,62,53,.05);
   font-size: 16px;
+  cursor: pointer !important;
+  pointer-events: auto !important;
+  user-select: none;
 }
 
 .hero {
@@ -2003,4 +2008,54 @@ html.lenis, html.lenis body { height: auto; }
   .dossier-scene, .agent-wheel button, .agent-core, .faq-answer-collapse { transition-duration: .01ms !important; }
   .research-marquee-track, .capability-marquee-track { animation: none !important; transform: translateX(0) !important; }
   .research-marquee-row, .capability-marquee-row { overflow-x: auto; -webkit-mask-image: none; mask-image: none; }
+}
+
+/* =========================================================
+   Auth Modal & Overlay (Bulletproof z-index & positioning)
+   ========================================================= */
+.auth-overlay {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 999999 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  background-color: rgba(16, 45, 39, 0.65) !important;
+  backdrop-filter: blur(10px) !important;
+  -webkit-backdrop-filter: blur(10px) !important;
+  padding: 20px !important;
+  box-sizing: border-box !important;
+  overflow-y: auto !important;
+}
+
+.auth-modal-card {
+  position: relative !important;
+  width: 100% !important;
+  max-width: 450px !important;
+  background: #fbfaf6 !important;
+  border-radius: 24px !important;
+  border: 1px solid rgba(23, 63, 54, 0.18) !important;
+  box-shadow: 0 25px 60px -15px rgba(10, 35, 29, 0.45) !important;
+  padding: 32px 28px !important;
+  color: #173f36 !important;
+  box-sizing: border-box !important;
+  z-index: 1000000 !important;
+  margin: auto !important;
+  animation: authModalFadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+@keyframes authModalFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }

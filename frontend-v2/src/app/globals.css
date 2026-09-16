@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 /* Global resets - minimal, landing.css has the bulk of styles */
 *, *::before, *::after {
   box-sizing: border-box;
