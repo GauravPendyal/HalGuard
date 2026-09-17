@@ -1,49 +1,36 @@
-# HalluciGuard web application
+This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
-The canonical web application combines the public GSAP/Lenis experience from
-`HalluciGuard-Front` with the authenticated workspace from `ChatUI`. The donor
-ChatUI simulation and browser API-key setting are intentionally not included.
+## Getting Started
 
-## Runtime boundary
-
-The browser calls same-origin Next.js route handlers. Those handlers proxy to
-the FastAPI service using `BACKEND_URL`; no OpenRouter, retrieval, OAuth-secret,
-or JWT-signing credential is included in the client bundle.
-
-The real verification path is:
-
-`OpenRouter → Detector → Verifier → Judge → Corrector → Re-verifier → Judge → Memory`
-
-Correction is conditional on the first Judge decision. Every terminal outcome
-crosses the Memory boundary for an auditable trace, but Memory persists only
-Judge-accepted verified facts.
-
-## Local development
+First, run the development server:
 
 ```bash
-npm install
 npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+# or
+bun dev
 ```
 
-With no `BACKEND_URL`, local route handlers use `http://127.0.0.1:8000`.
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
-## Frontend environment
+You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
-| Variable | Purpose |
-| --- | --- |
-| `BACKEND_URL` | Server-only FastAPI origin. Production defaults to the current Render service and may be overridden. |
-| `NEXT_PUBLIC_GOOGLE_CLIENT_ID` | Public Google Identity Services web client ID. |
-| `NEXT_PUBLIC_API_TIMEOUT_MS` | Browser verification timeout; defaults to 120 seconds. |
+This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
 
-`OPENROUTER_API_KEY`, `JWT_SECRET`, and retrieval credentials belong only on
-the backend deployment.
+## Learn More
 
-## Verification
+To learn more about Next.js, take a look at the following resources:
 
-```bash
-npm run build
-```
+- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
+- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
 
-The build performs Next.js compilation and TypeScript checking. The `/verify`,
-`/health`, `/auth/*`, and `/api/history` handlers contain no fallback data; an
-unavailable backend produces an explicit 502/503 response.
+You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+
+## Deploy on Vercel
+
+The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+
+Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
