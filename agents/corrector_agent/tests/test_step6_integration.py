@@ -363,12 +363,16 @@ def test_base_model_fallback_is_impossible_by_default(step5):
     assert result.changed_claims[0]["action"] == "model_unavailable"
 
 
-def test_base_model_optin_still_unavailable_without_ml_stack(step5):
+def test_base_model_optin_still_unavailable_without_ml_stack(step5, monkeypatch):
     """Even if an operator opts into the base model, it cannot be conjured without
     the ML stack, so the result is still unavailable — never a fabricated
     correction."""
     request = _python_request(step5)
     cfg = CorrectorConfig(allow_base_model_fallback=True)
+    monkeypatch.setattr(
+        "agents.corrector_agent.corrector.model_client.missing_dependencies",
+        lambda: ["torch", "transformers"],
+    )
     result = CorrectorAgent(cfg).correct(request)
 
     assert result.corrected_text == step5.response
