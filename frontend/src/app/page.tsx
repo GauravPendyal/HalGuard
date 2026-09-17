@@ -16,10 +16,13 @@ import {
   CheckCircle2,
   ChevronDown,
   CircleHelp,
+  Cpu,
   FileSearch,
   FileText,
   GitBranch,
+  Layers,
   Link2,
+  LogOut,
   Mail,
   Menu,
   Network,
@@ -27,9 +30,13 @@ import {
   RefreshCw,
   Scale,
   ScanSearch,
+  Search,
   Send,
+  Settings,
   ShieldCheck,
   Sparkles,
+  Terminal,
+  User,
   X,
 } from 'lucide-react'
 
@@ -150,45 +157,343 @@ function BrandMark() {
 }
 
 function Navbar({ onOpenAuth, authenticated }: { onOpenAuth: () => void; authenticated: boolean }) {
-  const [open, setOpen] = useState(false)
+  const [isOpen, setIsOpen] = useState(false)
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
+  const { user, signOut } = useAuth()
+  const router = useRouter()
+
   const links: [string, string][] = [
     ['The investigation', '#investigation'],
     ['The agents', '#agents'],
     ['The evidence', '#evidence'],
+    ['Capabilities', '#capabilities'],
   ]
+
+  const toggleMenu = () => {
+    setIsOpen((prev) => !prev)
+    if (isUserMenuOpen) setIsUserMenuOpen(false)
+  }
+
+  const toggleUserMenu = () => {
+    setIsUserMenuOpen((prev) => !prev)
+    if (isOpen) setIsOpen(false)
+  }
+
   return (
-    <header className="nav-wrap">
-      <nav className="nav" aria-label="Primary navigation">
-        <a className="brand" href="#top" aria-label="HalluciGuard home">
-          <span>HalluciGuard</span>
-          <span className="brand-dot" aria-hidden="true" />
-        </a>
-        <div className="desktop-links">
-          {links.map(([label, href], index) => (
-            <a className={`nav-link ${index === 0 ? 'active' : ''}`} key={href} href={href}>
-              {label}
-              {index === 0 && <span className="active-dot" />}
+    <div className="fixed top-4 left-0 right-0 z-[500] px-3 sm:px-6 pointer-events-none">
+      <div className="mx-auto flex max-w-6xl items-center justify-center">
+        {/* Floating Navbar Pill */}
+        <div className="pointer-events-auto relative flex h-16 w-full items-center justify-between gap-2 rounded-full border border-[#163e35]/15 bg-white/95 px-4 shadow-xl backdrop-blur-md dark:border-neutral-800 dark:bg-neutral-950/95">
+          {/* Left: Menu Toggle & Logo Section */}
+          <div className="flex items-center gap-2.5 pl-1 sm:pl-2">
+            {/* Popover Menu Toggle Button */}
+            <button
+              type="button"
+              onClick={toggleMenu}
+              aria-label="Toggle navigation menu"
+              className="flex h-9 w-9 items-center justify-center rounded-xl text-[#14382e] hover:bg-[#dceae1]/70 transition cursor-pointer dark:text-neutral-300 dark:hover:bg-neutral-800"
+            >
+              {isOpen ? <X className="h-5 w-5 text-[#14382e]" /> : <Menu className="h-5 w-5 text-[#14382e]" />}
+              <span className="sr-only">Toggle menu</span>
+            </button>
+
+            {/* Logo Section */}
+            <a href="#top" className="flex items-center gap-2 no-underline text-[#143f36] transition hover:opacity-90">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-[#dceae1]/80 text-[#173f36]">
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className="h-5 w-5 text-[#173f36]"
+                >
+                  <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5" />
+                </svg>
+              </div>
+              <span className="text-lg font-bold tracking-tight text-[#143f36] dark:text-white">
+                HalluciGuard
+              </span>
+              <span className="h-1.5 w-1.5 rounded-full bg-[#37977d]" />
             </a>
-          ))}
+          </div>
+
+          {/* Middle: Desktop Quick Links */}
+          <div className="hidden items-center gap-6 md:flex">
+            {links.map(([label, href]) => (
+              <a
+                key={href}
+                href={href}
+                className="text-sm font-medium text-[#142e25] transition-colors hover:text-[#2e7d63] dark:text-neutral-300 dark:hover:text-white no-underline"
+              >
+                {label}
+              </a>
+            ))}
+          </div>
+
+          {/* Right: Actions (Search, User Dropdown, Sign In / Workspace Button) */}
+          <div className="flex items-center gap-2">
+            {/* Search Button */}
+            <a
+              href="#investigation"
+              aria-label="Search claims"
+              className="hidden lg:flex h-9 w-9 items-center justify-center rounded-full text-[#14382e] hover:bg-[#dceae1]/70 transition no-underline dark:text-neutral-400 dark:hover:bg-neutral-800"
+            >
+              <Search className="h-4.5 w-4.5" />
+            </a>
+
+            {/* Avatar / Account Dropdown */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={toggleUserMenu}
+                className="flex items-center gap-1.5 rounded-full p-1 hover:bg-[#dceae1]/70 transition cursor-pointer dark:hover:bg-neutral-800"
+              >
+                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-[#246b59] text-xs font-bold text-white shadow-sm">
+                  {user?.name ? user.name.slice(0, 2).toUpperCase() : user?.email ? user.email.slice(0, 2).toUpperCase() : "HG"}
+                </div>
+                <ChevronDown className="hidden h-4 w-4 text-[#62716c] lg:block" />
+              </button>
+
+              {/* Account Dropdown Menu */}
+              {isUserMenuOpen && (
+                <div className="pointer-events-auto absolute right-0 top-12 w-56 rounded-2xl border border-[#163e35]/15 bg-white p-2 shadow-2xl backdrop-blur-xl dark:border-neutral-800 dark:bg-neutral-950">
+                  <div className="px-3 py-2 border-b border-[#163e35]/10">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-[#7a8883]">
+                      {authenticated ? "Signed in as" : "Account Status"}
+                    </p>
+                    <p className="text-xs font-semibold text-[#143f36] truncate mt-0.5">
+                      {authenticated ? (user?.name || user?.email) : "Guest Mode"}
+                    </p>
+                  </div>
+                  <div className="py-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsUserMenuOpen(false)
+                        if (authenticated) router.push('/chat')
+                        else onOpenAuth()
+                      }}
+                      className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium text-[#14382e] hover:bg-[#dceae1]/50 transition cursor-pointer text-left"
+                    >
+                      <User className="h-3.5 w-3.5 text-[#246b59]" /> {authenticated ? "Open Workspace" : "Sign In / Register"}
+                    </button>
+                    <a
+                      href="#investigation"
+                      onClick={() => setIsUserMenuOpen(false)}
+                      className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium text-[#14382e] hover:bg-[#dceae1]/50 transition no-underline"
+                    >
+                      <Settings className="h-3.5 w-3.5 text-[#246b59]" /> System Status
+                    </a>
+                  </div>
+                  {authenticated && (
+                    <div className="border-t border-[#163e35]/10 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsUserMenuOpen(false)
+                          signOut()
+                        }}
+                        className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-xs font-medium text-red-600 hover:bg-red-50 transition cursor-pointer text-left"
+                      >
+                        <LogOut className="h-3.5 w-3.5" /> Log out
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Primary Action Button */}
+            <button
+              type="button"
+              onClick={onOpenAuth}
+              className="flex items-center gap-1.5 rounded-full bg-[#246b59] px-4 py-2 text-xs font-semibold text-white shadow-md transition hover:bg-[#1d594b] cursor-pointer"
+            >
+              {authenticated ? "Workspace" : "Sign In / Chat"} <ArrowUpRight className="h-3.5 w-3.5" />
+            </button>
+          </div>
         </div>
-        <button className="nav-cta cursor-pointer" type="button" onClick={onOpenAuth}>
-          {authenticated ? 'Open Chat UI' : 'Sign In / Chat'} <ArrowUpRight size={14} />
-        </button>
-        <button className="menu-button" type="button" aria-label="Toggle navigation" aria-expanded={open} onClick={() => setOpen(!open)}>
-          {open ? <X size={20} /> : <Menu size={20} />}
-        </button>
-      </nav>
-      {open && (
-        <div className="mobile-menu">
-          {links.map(([label, href]) => <a key={href} href={href} onClick={() => setOpen(false)}>{label}</a>)}
-          <button className="text-left font-medium p-3 rounded-lg border-0 bg-transparent text-[#14382e] hover:bg-[#dceae1] cursor-pointer" type="button" onClick={() => { setOpen(false); onOpenAuth(); }}>
-            {authenticated ? 'Open Chat UI' : 'Sign In / Chat'}
-          </button>
-        </div>
-      )}
-    </header>
+
+        {/* Popover Mega-Menu Panel */}
+        {isOpen && (
+          <div className="pointer-events-auto absolute top-20 left-1/2 -translate-x-1/2 w-[calc(100%-2rem)] max-w-6xl max-h-[82vh] overflow-y-auto rounded-3xl border border-[#163e35]/15 bg-white p-0 shadow-2xl backdrop-blur-2xl dark:border-neutral-800 dark:bg-neutral-950">
+            <div className="grid grid-cols-1 gap-6 p-6 sm:grid-cols-2 lg:grid-cols-4 lg:p-8 dark:divide-neutral-900">
+              {/* Column 1: Compute Engine */}
+              <div className="flex flex-col pb-6 lg:pb-0 lg:pr-6 border-b border-[#163e35]/10 lg:border-b-0">
+                <div className="mb-3 inline-flex h-10 w-10 items-center justify-center rounded-xl bg-[#dceae1] text-[#173f36]">
+                  <Cpu className="h-5 w-5 text-[#173f36]" />
+                </div>
+                <h4 className="mb-1 text-sm font-semibold text-[#143f36] dark:text-neutral-50">
+                  HalluciGuard Compute Engine
+                </h4>
+                <p className="mb-4 text-xs leading-relaxed text-[#62716c] dark:text-neutral-400">
+                  Deconstruct AI answers into testable claims, search primary sources, and verify with multi-agent consensus.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <a
+                    href="#investigation"
+                    onClick={() => setIsOpen(false)}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-full border border-[#163e35]/15 bg-[#f5f9f6] px-3 text-[11px] font-medium text-[#173f36] hover:bg-[#dceae1] transition no-underline"
+                  >
+                    <Layers className="h-3.5 w-3.5 text-[#246b59]" />
+                    Pipelines
+                  </a>
+                  <a
+                    href="#evidence"
+                    onClick={() => setIsOpen(false)}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-full border border-[#163e35]/15 bg-[#f5f9f6] px-3 text-[11px] font-medium text-[#173f36] hover:bg-[#dceae1] transition no-underline"
+                  >
+                    <GitBranch className="h-3.5 w-3.5 text-[#246b59]" />
+                    Evidence Maps
+                  </a>
+                  <a
+                    href="#agents"
+                    onClick={() => setIsOpen(false)}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-full border border-[#163e35]/15 bg-[#f5f9f6] px-3 text-[11px] font-medium text-[#173f36] hover:bg-[#dceae1] transition no-underline"
+                  >
+                    <Terminal className="h-3.5 w-3.5 text-[#246b59]" />
+                    Agent CLI
+                  </a>
+                </div>
+              </div>
+
+              {/* Column 2: 5-Agent Specialist System */}
+              <div className="flex flex-col gap-3.5 border-b border-[#163e35]/10 py-6 lg:border-b-0 lg:border-l lg:py-0 lg:pl-6">
+                <h4 className="text-[11px] font-bold uppercase tracking-wider text-[#7a8883]">
+                  5-Agent Specialist System
+                </h4>
+                <a
+                  href="#agents"
+                  onClick={() => setIsOpen(false)}
+                  className="group flex flex-col no-underline"
+                >
+                  <span className="text-xs font-semibold text-[#143f36] group-hover:text-[#246b59] transition">
+                    01 Detector Agent
+                  </span>
+                  <span className="text-[11px] text-[#62716c]">Atomic claim extraction dossier</span>
+                </a>
+                <a
+                  href="#agents"
+                  onClick={() => setIsOpen(false)}
+                  className="group flex flex-col no-underline"
+                >
+                  <span className="text-xs font-semibold text-[#143f36] group-hover:text-[#246b59] transition">
+                    02 Verifier Agent
+                  </span>
+                  <span className="text-[11px] text-[#62716c]">Evidence passage matching</span>
+                </a>
+                <a
+                  href="#agents"
+                  onClick={() => setIsOpen(false)}
+                  className="group flex flex-col no-underline"
+                >
+                  <span className="text-xs font-semibold text-[#143f36] group-hover:text-[#246b59] transition">
+                    03 Judge Agent
+                  </span>
+                  <span className="text-[11px] text-[#62716c]">Claim-level verdict synthesis</span>
+                </a>
+                <a
+                  href="#agents"
+                  onClick={() => setIsOpen(false)}
+                  className="group flex flex-col no-underline"
+                >
+                  <span className="text-xs font-semibold text-[#143f36] group-hover:text-[#246b59] transition">
+                    04 & 05 Corrector & Memory
+                  </span>
+                  <span className="text-[11px] text-[#62716c]">Response repair & provenance tracking</span>
+                </a>
+              </div>
+
+              {/* Column 3: Resources & Proof */}
+              <div className="flex flex-col gap-3 border-b border-[#163e35]/10 py-6 lg:border-b-0 lg:border-l lg:py-0 lg:pl-6">
+                <h4 className="text-[11px] font-bold uppercase tracking-wider text-[#7a8883]">
+                  Resources & Proof
+                </h4>
+                <a
+                  href="#investigation"
+                  onClick={() => setIsOpen(false)}
+                  className="text-xs font-medium text-[#14382e] hover:text-[#246b59] transition no-underline"
+                >
+                  The Investigation Sequence
+                </a>
+                <a
+                  href="#evidence"
+                  onClick={() => setIsOpen(false)}
+                  className="text-xs font-medium text-[#14382e] hover:text-[#246b59] transition no-underline"
+                >
+                  Evidence Constellation Graph
+                </a>
+                <a
+                  href="#capabilities"
+                  onClick={() => setIsOpen(false)}
+                  className="text-xs font-medium text-[#14382e] hover:text-[#246b59] transition no-underline"
+                >
+                  Capabilities & Benchmarks
+                </a>
+                <a
+                  href="#faq"
+                  onClick={() => setIsOpen(false)}
+                  className="text-xs font-medium text-[#14382e] hover:text-[#246b59] transition no-underline"
+                >
+                  FAQ & System Status
+                </a>
+              </div>
+
+              {/* Column 4: Featured Launch Banner */}
+              <div className="flex flex-col border-t border-[#163e35]/10 pt-6 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-6">
+                <h4 className="mb-3 text-[11px] font-bold uppercase tracking-wider text-[#7a8883]">
+                  Featured Workspace
+                </h4>
+                <div
+                  onClick={() => {
+                    setIsOpen(false)
+                    onOpenAuth()
+                  }}
+                  className="group relative flex h-full min-h-[160px] flex-col justify-between overflow-hidden rounded-2xl border border-[#246b59]/20 bg-[#edf5f1] p-5 transition hover:shadow-md cursor-pointer"
+                >
+                  <div>
+                    <span className="mb-2 inline-block rounded-full bg-white px-2.5 py-0.5 text-[10px] font-bold text-[#173f36] shadow-sm">
+                      AI Safety Workspace
+                    </span>
+                    <h5 className="mb-1 text-xs font-bold text-[#143f36]">
+                      Ground your AI LLM answers in verified truth
+                    </h5>
+                    <p className="text-[11px] text-[#556660]">
+                      Interact directly with the HalluciGuard multi-agent pipeline.
+                    </p>
+                  </div>
+
+                  <div className="mt-4 flex items-center text-xs font-bold text-[#246b59]">
+                    Launch Chat Workspace{" "}
+                    <ArrowUpRight className="ml-1 h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5 group-hover:-translate-y-0.5" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Mobile Action Footer inside Popover */}
+            <div className="border-t border-[#163e35]/10 px-6 py-4 lg:hidden">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsOpen(false)
+                  onOpenAuth()
+                }}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#246b59] py-3 text-xs font-semibold text-white shadow-md hover:bg-[#1d594b] cursor-pointer"
+              >
+                {authenticated ? "Open Chat Workspace" : "Sign In / Launch Chat"} <ArrowUpRight className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
+
 
 function RotatingWheel() {
   const ticks = Array.from({ length: 120 }, (_, i) => i)
