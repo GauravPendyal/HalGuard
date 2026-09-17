@@ -1,23 +1,28 @@
 "use client";
 
-import dynamic from "next/dynamic";
-import "@/components/chat/chat.css";
-
-const ChatApp = dynamic(
-  () => import("@/components/chat/ChatApp").then((mod) => mod.ChatApp),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-screen w-screen items-center justify-center bg-[#212121] text-white">
-        <div className="flex items-center gap-3">
-          <div className="h-5 w-5 animate-spin rounded-full border-2 border-emerald-500 border-t-transparent" />
-          <span className="text-sm font-medium">Loading Chat Workspace...</span>
-        </div>
-      </div>
-    ),
-  }
-);
+import { ChatProvider } from "@/context/ChatContext";
+import { HalluciGuardShell } from "@/components/shell/HalluciGuardShell";
+import { Toaster } from "sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 
 export default function ChatPage() {
-  return <ChatApp />;
+  return (
+    <ChatProvider>
+      <TooltipProvider delayDuration={200}>
+        <HalluciGuardShell />
+        <Toaster
+          position="bottom-right"
+          toastOptions={{
+            style: {
+              background: "var(--surface)",
+              color: "var(--text-primary)",
+              border: "1px solid var(--border)",
+              borderRadius: 14,
+              fontFamily: "inherit"
+            }
+          }}
+        />
+      </TooltipProvider>
+    </ChatProvider>
+  );
 }
