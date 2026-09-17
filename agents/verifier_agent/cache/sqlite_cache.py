@@ -21,7 +21,13 @@ class SqliteCache:
     async def init_db(self) -> None:
         """Initialize the database table if it doesn't exist."""
         try:
+            import os
+
             import aiosqlite
+
+            parent = os.path.dirname(os.path.abspath(self.db_path))
+            if parent:
+                os.makedirs(parent, exist_ok=True)
 
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute(
