@@ -107,3 +107,25 @@ def test_decompose_rejects_fragments_on_live_input():
     _assert_no_fragments(claims)
     # The compound predicate is preserved intact within its claim.
     assert any("technological and commercial hub" in c.lower() for c in claims)
+
+
+def test_decompose_preserves_trailing_dates_and_numbers():
+    """Regression test: verify trailing dates and numbers are not treated as numbered list markers."""
+    decomposer = ClaimDecomposer()
+    claims = decomposer.decompose(
+        "Python was created by Guido van Rossum. Python was first released in 1991. Elon Musk created Java."
+    )
+    assert len(claims) == 3
+    assert any("1991" in c for c in claims)
+    assert any("Python was first released in 1991" in c for c in claims)
+
+
+def test_decompose_preserves_decimals_and_percentages():
+    decomposer = ClaimDecomposer()
+    claims_dec = decomposer.decompose("The value is 3.14.")
+    assert len(claims_dec) == 1
+    assert "3.14" in claims_dec[0]
+
+    claims_pct = decomposer.decompose("The model achieved 92.45% accuracy.")
+    assert len(claims_pct) == 1
+    assert "92.45%" in claims_pct[0]

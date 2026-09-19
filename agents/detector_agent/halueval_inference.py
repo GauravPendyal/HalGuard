@@ -5,6 +5,7 @@ Loads the fine-tuned HaluEval detector model from disk and provides
 a simple predict() interface for the DetectorAgent.
 """
 
+import inspect
 import os
 import logging
 from dataclasses import dataclass
@@ -213,7 +214,12 @@ class HaluEvalInference:
             padding=True,
         )
 
-        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+        accepted_inputs = set(inspect.signature(self._model.forward).parameters)
+        inputs = {
+            k: v.to(self.device)
+            for k, v in inputs.items()
+            if k in accepted_inputs
+        }
 
         with torch.no_grad():
             logits = self._model(**inputs).logits

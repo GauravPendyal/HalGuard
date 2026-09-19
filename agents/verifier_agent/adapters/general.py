@@ -105,13 +105,13 @@ class GeneralAdapter:
                             overlap = sum(1 for t in claim_tokens if t in full_section_text.lower())
                             is_rel_section = any(
                                 s in current_heading.lower()
-                                for s in ("early life", "family", "personal life", "biography", "background", "career", "geography", "history", "founding", "creation", "parent", "origin")
+                                for s in ("early life", "family", "personal life", "biography", "background", "career", "geography", "history", "founding", "creation", "parent", "origin", "development", "developer", "designer", "author")
                             )
                             if (overlap >= 1 or is_rel_section) and len(full_section_text) > 40:
                                 sentences = re.split(r"(?<=[.!?])\s+", full_section_text)
                                 chunk = ""
                                 for sent in sentences:
-                                    if len(chunk) + len(sent) < 400:
+                                    if len(chunk) + len(sent) < 600:
                                         chunk = f"{chunk} {sent}".strip()
                                     else:
                                         if chunk:
@@ -129,13 +129,13 @@ class GeneralAdapter:
                     overlap = sum(1 for t in claim_tokens if t in full_section_text.lower())
                     is_rel_section = any(
                         s in current_heading.lower()
-                        for s in ("early life", "family", "personal life", "biography", "background", "career", "geography", "history", "founding", "creation", "parent", "origin")
+                        for s in ("early life", "family", "personal life", "biography", "background", "career", "geography", "history", "founding", "creation", "parent", "origin", "development", "developer", "designer", "author")
                     )
                     if (overlap >= 1 or is_rel_section) and len(full_section_text) > 40:
                         sentences = re.split(r"(?<=[.!?])\s+", full_section_text)
                         chunk = ""
                         for sent in sentences:
-                            if len(chunk) + len(sent) < 400:
+                            if len(chunk) + len(sent) < 600:
                                 chunk = f"{chunk} {sent}".strip()
                             else:
                                 if chunk:
@@ -144,12 +144,16 @@ class GeneralAdapter:
                         if chunk and len(chunk) > 30:
                             sections.append((current_heading, chunk))
 
-                # Sort sections: high-overlap / family / early life first
+                # Sort sections: high-overlap / history / creation / family / attribution first
                 def _section_priority(sec: Tuple[str, str]) -> int:
                     h, c = sec
-                    score = sum(1 for t in claim_tokens if t in c.lower()) * 2
-                    if any(k in h.lower() for k in ("early life", "family", "personal life", "parent")):
-                        score += 3
+                    h_lower = h.lower()
+                    c_lower = c.lower()
+                    score = sum(1 for t in claim_tokens if t in c_lower) * 2
+                    if any(k in h_lower for k in ("history", "creation", "origin", "founding", "development", "background", "early life", "family", "personal life", "parent", "developer", "designer", "author")):
+                        score += 5
+                    if any(term in c_lower for term in ("designed by", "created by", "developed by", "founded by", "invented by", "authored by", "initiated by", "started by", "written by")):
+                        score += 5
                     return -score
 
                 sections.sort(key=_section_priority)
@@ -258,7 +262,7 @@ class GeneralAdapter:
                 source="wikipedia",
                 url=f"https://en.wikipedia.org/wiki/{title_url}",
                 publication_date="unknown",
-                snippet=f"Article [{title}]: {final_snippet[:400]}",
+                snippet=f"Article [{title}]: {final_snippet[:600]}",
                 source_id=f"wiki_{title_url.lower()}",
                 relevance_score=0.0,
                 source_confidence_hint=0.85 if summary_extract else 0.70,
@@ -277,7 +281,7 @@ class GeneralAdapter:
                         source="wikipedia",
                         url=f"https://en.wikipedia.org/wiki/{title_url}#{urllib.parse.quote(section_name.replace(' ', '_'))}",
                         publication_date="unknown",
-                        snippet=f"Section [{title} - {section_name}]: {section_text[:400]}",
+                        snippet=f"Section [{title} - {section_name}]: {section_text[:600]}",
                         source_id=f"wiki_{title_url.lower()}_{section_name.lower().replace(' ', '_')}",
                         relevance_score=0.0,
                         source_confidence_hint=0.80,

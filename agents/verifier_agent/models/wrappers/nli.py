@@ -48,7 +48,11 @@ class NLIWrapper(BaseModelWrapper):
             return fallback
 
         try:
-            result = self._pipeline({"text": premise, "text_pair": hypothesis})
+            result = self._pipeline(
+                {"text": premise, "text_pair": hypothesis},
+                truncation=True,
+                max_length=512,
+            )
             if result and isinstance(result[0], list):
                 result = result[0]
 
@@ -83,7 +87,7 @@ class NLIWrapper(BaseModelWrapper):
 
         try:
             batch = [{"text": premise, "text_pair": hyp} for hyp in hypotheses]
-            raw_results = self._pipeline(batch)
+            raw_results = self._pipeline(batch, truncation=True, max_length=512)
             outputs: List[Dict[str, float]] = []
             for result in raw_results:
                 rows = result if result and isinstance(result[0], dict) else result[0]

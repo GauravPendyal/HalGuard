@@ -123,7 +123,7 @@ class TestVerifierV1Stabilization(unittest.IsolatedAsyncioTestCase):
         os.environ["VERIFIER_CACHE_ENABLED"] = "true"
         self.assertTrue(cache.is_enabled())
 
-        os.environ["VERIFIER_CACHE_ENABLED"] = "false"
+        os.environ.pop("VERIFIER_CACHE_ENABLED", None)
 
     def test_8_degraded_nli_handling(self):
         scorer = EvidenceScorer()

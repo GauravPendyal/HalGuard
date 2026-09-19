@@ -59,6 +59,14 @@ class JudgeDecision(str, Enum):
     ABSTAIN = "ABSTAIN"
 
 
+class AnswerStatus(str, Enum):
+    """Answer-level decision status."""
+    ACCEPTED = "ACCEPTED"
+    REQUIRES_CORRECTION = "REQUIRES_CORRECTION"
+    REJECTED = "REJECTED"
+    INCONCLUSIVE = "INCONCLUSIVE"
+
+
 class SeverityLevel(str, Enum):
     """Severity levels for issues and risks."""
     LOW = "LOW"
@@ -179,8 +187,30 @@ class Evidence(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# 3. Claim Report Contract
+# 3. Extracted Claim & Claim Report Contract
 # ---------------------------------------------------------------------------
+
+class ExtractedClaim(BaseModel):
+    """Canonical representation of an atomic claim extracted from the draft response."""
+    model_config = ConfigDict(extra="ignore", use_enum_values=True)
+
+    claim_id: str = Field(
+        ...,
+        description="Unique identifier for the claim (e.g. c1, c2).",
+    )
+    text: str = Field(
+        ...,
+        description="Text of the atomic claim extracted from the draft response.",
+    )
+    span: Optional[List[int]] = Field(
+        default=None,
+        description="Character start and end span [start, end] in the source draft.",
+    )
+    claim_type: str = Field(
+        default="factual",
+        description="Classification of the claim (factual, relational, definition, etc.).",
+    )
+
 
 class ClaimReport(BaseModel):
     """Canonical verification assessment for an individual atomic claim."""
@@ -322,6 +352,14 @@ class JudgeResult(BaseModel):
         ...,
         description="Final arbitration decision (ACCEPT, CORRECT, REJECT, VERIFY_AGAIN, ABSTAIN).",
     )
+    answer_status: AnswerStatus = Field(
+        default=AnswerStatus.ACCEPTED,
+        description="Answer-level validation status (ACCEPTED, REQUIRES_CORRECTION, REJECTED, INCONCLUSIVE).",
+    )
+    correction_required: bool = Field(
+        default=False,
+        description="Explicit flag indicating whether the Corrector Agent must be invoked.",
+    )
     severity: SeverityLevel = Field(
         default=SeverityLevel.LOW,
         description="Assessed severity of identified contradictions or risks.",
@@ -406,6 +444,30 @@ class ReverificationResult(BaseModel):
         ge=0,
         description="Count of unresolved or newly introduced contradictions.",
     )
+    verified_claims: int = Field(
+        default=0,
+        ge=0,
+        description="Count of evaluated claims in reverification.",
+    )
+    supported: int = Field(
+        default=0,
+        ge=0,
+        description="Count of supported/verified claims in reverification.",
+    )
+    contradicted: int = Field(
+        default=0,
+        ge=0,
+        description="Count of contradicted claims in reverification.",
+    )
+    uncertain: int = Field(
+        default=0,
+        ge=0,
+        description="Count of uncertain or unverified claims in reverification.",
+    )
+    correction_successful: bool = Field(
+        default=False,
+        description="True if correction is fully validated with zero contradictions and >=1 supported claim.",
+    )
     status: ExecutionStatus = Field(
         default=ExecutionStatus.COMPLETED,
         description="Status of the reverification process.",
@@ -445,12 +507,14 @@ __all__ = [
     "EntailmentLabel",
     "VerdictLabel",
     "JudgeDecision",
+    "AnswerStatus",
     "SeverityLevel",
     "ExecutionStatus",
     "MemoryStatus",
     "ValidationStatus",
     "DetectorResult",
     "Evidence",
+    "ExtractedClaim",
     "ClaimReport",
     "VerifierResult",
     "CorrectionRequest",

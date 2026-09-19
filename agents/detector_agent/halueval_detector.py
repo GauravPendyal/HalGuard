@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional
@@ -114,7 +115,12 @@ class HaluEvalDetector:
             padding=True, return_tensors="pt",
         )
         device = next(self.model.parameters()).device
-        batch = {key: value.to(device) for key, value in batch.items()}
+        accepted_inputs = set(inspect.signature(self.model.forward).parameters)
+        batch = {
+            key: value.to(device)
+            for key, value in batch.items()
+            if key in accepted_inputs
+        }
         probabilities = torch.softmax(self.model(**batch).logits, dim=-1)[0]
         probabilities = probabilities.detach().cpu().tolist()
         hallucination_probability = float(probabilities[1])

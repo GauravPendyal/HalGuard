@@ -539,6 +539,7 @@ class TestCertificationDisablesCache:
     def test_cache_enabled_in_normal_mode(self, monkeypatch):
         monkeypatch.delenv("CERTIFICATION_MODE", raising=False)
         monkeypatch.delenv("CACHE_ENABLED", raising=False)
+        monkeypatch.delenv("VERIFIER_CACHE_ENABLED", raising=False)
         get_settings.cache_clear()
         try:
             pipeline = VerificationPipeline()

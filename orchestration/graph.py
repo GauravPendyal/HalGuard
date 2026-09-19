@@ -7,6 +7,17 @@ import uuid
 from dataclasses import asdict, is_dataclass
 from typing import Any, Callable, Dict, List, Optional
 
+from pathlib import Path
+from dotenv import find_dotenv, load_dotenv
+
+# Ensure .env from repository root is loaded into environment variables
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_ENV_FILE = _REPO_ROOT / ".env"
+if _ENV_FILE.exists():
+    load_dotenv(_ENV_FILE)
+else:
+    load_dotenv(find_dotenv(usecwd=True))
+
 from langgraph.graph import END, START, StateGraph
 
 from services.base_llm_service import BaseLLMService
@@ -96,6 +107,7 @@ async def _generate_node(state: HalluciGuardState) -> dict[str, Any]:
         )
         return {
             "draft_response": existing_response,
+            "draft_answer": existing_response,
             "llm_response": existing_response,
             "base_llm": {
                 "provider": "pre_supplied",
@@ -146,6 +158,7 @@ async def _generate_node(state: HalluciGuardState) -> dict[str, Any]:
 
         return {
             "draft_response": draft,
+            "draft_answer": draft,
             "llm_response": draft,
             "final_response": draft,
             "base_llm": gen_result,
@@ -186,12 +199,80 @@ def _generate_route(state: HalluciGuardState) -> str:
     return "detector"
 
 
+def _extract_claims_from_draft(draft_text: str) -> list[dict[str, Any]]:
+    """
+    Extract structured atomic factual claims from draft response text.
+    Uses ClaimDecomposer if available, falling back to sentence segmentation.
+    Each claim contains claim_id, text, span, and claim_type.
+    """
+    if not draft_text or not draft_text.strip():
+        return []
+
+    try:
+        from agents.corrector_agent.corrector.sentence_utils import extract_sentence_spans
+        sents = [s.text for s in extract_sentence_spans(draft_text)]
+    except Exception:
+        sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", draft_text.strip()) if s.strip()]
+    if not sents:
+        sents = [draft_text.strip()]
+
+    raw_claims: list[str] = []
+    try:
+        from agents.verifier_agent.claims.claim_decomposer import ClaimDecomposer
+        decomposed = ClaimDecomposer().decompose(draft_text)
+        if decomposed:
+            cursor = 0
+            for d in decomposed:
+                idx = draft_text.find(d, cursor)
+                if idx == -1:
+                    idx = draft_text.find(d)
+                if idx != -1:
+                    end_pos = idx + len(d)
+                    cursor = end_pos
+                    match_punct = re.match(r"^[.!?]+[\'\"’”\)\]]*", draft_text[end_pos:])
+                    if match_punct:
+                        raw_claims.append(draft_text[idx : end_pos + match_punct.end()])
+                        cursor = end_pos + match_punct.end()
+                    else:
+                        raw_claims.append(draft_text[idx:end_pos])
+                else:
+                    raw_claims.append(d)
+    except Exception:
+        pass
+
+    if not raw_claims:
+        raw_claims = sents
+
+    extracted: list[dict[str, Any]] = []
+    cursor = 0
+    for idx, claim_str in enumerate(raw_claims):
+        cid = f"claim_{idx + 1}"
+        start_idx = draft_text.find(claim_str, cursor)
+        if start_idx == -1:
+            start_idx = draft_text.find(claim_str)
+        if start_idx != -1:
+            end_idx = start_idx + len(claim_str)
+            span = [start_idx, end_idx]
+            cursor = end_idx
+        else:
+            span = None
+        extracted.append(
+            {
+                "claim_id": cid,
+                "text": claim_str,
+                "span": span,
+                "claim_type": "factual",
+            }
+        )
+    return extracted
+
+
 async def _detector_node(state: HalluciGuardState) -> dict[str, Any]:
     from agents.detector_agent.detector import DetectorAgent
 
     node_start = start_timer()
     try:
-        llm_resp = state.get("llm_response", "")
+        llm_resp = state.get("draft_answer") or state.get("llm_response") or state.get("draft_response", "")
         if not llm_resp:
             raise ValueError("No LLM response available for detection.")
 
@@ -218,6 +299,10 @@ async def _detector_node(state: HalluciGuardState) -> dict[str, Any]:
         )
         route = "verify" if should_verify else "accept"
 
+        # Extract factual claims directly from the generated draft answer
+        extracted_claims = _extract_claims_from_draft(llm_resp)
+        claim_texts = [c["text"] for c in extracted_claims] if extracted_claims else [llm_resp]
+
         # Inter-agent bus messaging
         if route == "accept":
             bus = add_bus_message(
@@ -228,6 +313,7 @@ async def _detector_node(state: HalluciGuardState) -> dict[str, Any]:
                 payload={
                     "hallucination_probability": detector.get("hallucination_probability"),
                     "risk_level": detector.get("risk_level", "LOW"),
+                    "extracted_claims": extracted_claims,
                 },
             )
         else:
@@ -237,7 +323,8 @@ async def _detector_node(state: HalluciGuardState) -> dict[str, Any]:
                 target_agent="supervisor",
                 message_type="SUSPICIOUS_CLAIMS",
                 payload={
-                    "suspicious_claims": [llm_resp],
+                    "suspicious_claims": claim_texts,
+                    "extracted_claims": extracted_claims,
                     "hallucination_probability": detector.get("hallucination_probability"),
                     "risk_level": detector.get("risk_level", "HIGH"),
                 },
@@ -246,6 +333,12 @@ async def _detector_node(state: HalluciGuardState) -> dict[str, Any]:
         return {
             "detector": detector,
             "detector_result": detector,
+            "draft_answer": llm_resp,
+            "extracted_claims": extracted_claims,
+            "claims": [
+                {"claim_id": c["claim_id"], "text": c["text"], "verdict": "unverified"}
+                for c in extracted_claims
+            ],
             "route": route,
             "hallucination_probability": float(
                 detector.get("hallucination_probability", 0.0)
@@ -265,6 +358,7 @@ async def _detector_node(state: HalluciGuardState) -> dict[str, Any]:
                 latency_ms=elapsed_ms(node_start),
                 route=route,
                 risk_level=detector.get("risk_level", "LOW"),
+                claims_extracted=len(extracted_claims),
             ),
         }
     except Exception as exc:
@@ -400,19 +494,35 @@ async def _verifier_node(state: HalluciGuardState) -> dict[str, Any]:
     VerificationPipeline, SuspiciousClaim, VerifierInputV2 = _verifier_imports()
     node_start = start_timer()
     try:
-        # Verifier evaluates the core factual claim
-        claim_text = state.get("user_query") or state.get("llm_response") or state.get("draft_response") or ""
+        # Verifier MUST verify factual claims from the generated draft answer, NOT state.user_query
+        extracted = state.get("extracted_claims")
+        if not extracted:
+            draft_txt = state.get("draft_answer") or state.get("llm_response") or state.get("draft_response", "")
+            if draft_txt:
+                extracted = _extract_claims_from_draft(draft_txt)
+
+        suspicious_claims: list[Any] = []
+        if extracted:
+            for idx, c in enumerate(extracted):
+                cid = str(c.get("claim_id") or f"c{idx+1}")
+                ctxt = str(c.get("text", "")).strip()
+                if ctxt:
+                    suspicious_claims.append(SuspiciousClaim(claim_id=cid, text=ctxt))
+
+        if not suspicious_claims:
+            draft_txt = state.get("draft_answer") or state.get("llm_response") or state.get("draft_response", "")
+            if draft_txt and draft_txt.strip():
+                suspicious_claims.append(SuspiciousClaim(claim_id="c1", text=draft_txt.strip()))
+
         payload = VerifierInputV2(
             query_id=state.get("request_id")
             or state.get("execution_id")
             or str(uuid.uuid4()),
             domain=state.get("domain", "general"),
-            suspicious_claims=[
-                SuspiciousClaim(claim_id="c1", text=claim_text)
-            ],
+            suspicious_claims=suspicious_claims,
         )
         try:
-            verifier_timeout = float(os.environ.get("VERIFIER_TIMEOUT_SECONDS", "120.0"))
+            verifier_timeout = float(os.environ.get("VERIFIER_TIMEOUT_SECONDS", "300.0"))
             verifier_res = await asyncio.wait_for(VerificationPipeline().verify(payload), timeout=verifier_timeout)
             verifier = _dump(verifier_res)
         except (asyncio.TimeoutError, Exception) as sub_err:
@@ -493,6 +603,8 @@ async def _verifier_node(state: HalluciGuardState) -> dict[str, Any]:
             else "verified" if has_verified
             else "unverified"
         )
+        verifier["verification_status"] = overall_status
+        verifier["draft_verification_status"] = overall_status
 
         return {
             "verifier": verifier,
@@ -504,6 +616,8 @@ async def _verifier_node(state: HalluciGuardState) -> dict[str, Any]:
             "ranked_evidence": evidence_all,
             "nli_results": nli_results,
             "verification_status": overall_status,
+            "draft_verification_status": overall_status,
+            "original_verification_status": overall_status,
             "inter_agent_bus": bus,
             "updated_at": utc_now(),
             "trace": add_trace(
@@ -577,6 +691,18 @@ async def _judge_node(state: HalluciGuardState) -> dict[str, Any]:
         dumped_judge = _dump(judge_result)
 
         decision_val = str(dumped_judge.get("decision", "ABSTAIN")).upper()
+        answer_status_val = str(dumped_judge.get("answer_status", "ACCEPTED" if decision_val == "ACCEPT" else "REQUIRES_CORRECTION")).upper()
+        
+        # When a contradicted draft enters the pipeline, correction_required must remain True
+        # until a valid grounded correction is actually accepted.
+        prev_corr_required = bool(state.get("correction_required", False))
+        if decision_val == "ACCEPT":
+            corr_required_val = False
+        elif prev_corr_required:
+            corr_required_val = True
+        else:
+            corr_required_val = bool(dumped_judge.get("correction_required", decision_val == "CORRECT"))
+
         severity_val = str(dumped_judge.get("severity", "LOW")).upper()
         corr_req = dumped_judge.get("correction_request")
 
@@ -586,7 +712,10 @@ async def _judge_node(state: HalluciGuardState) -> dict[str, Any]:
         if decision_val == "ACCEPT":
             route = "memory"
             verification_status = "verified_and_accepted"
-        elif decision_val == "CORRECT":
+        elif decision_val == "REJECT":
+            route = "reject"
+            verification_status = "rejected_by_judge"
+        elif decision_val == "CORRECT" or corr_required_val:
             active = state.get("active_agents")
             if active is not None and "corrector" not in active:
                 route = "human_escalation"
@@ -596,9 +725,6 @@ async def _judge_node(state: HalluciGuardState) -> dict[str, Any]:
         elif decision_val == "VERIFY_AGAIN":
             route = "verifier" if retry_count < state.get("max_retries", 2) else "human_escalation"
             verification_status = "reverification_requested"
-        elif decision_val == "REJECT":
-            route = "reject"
-            verification_status = "rejected_by_judge"
         else:
             route = "human_escalation"
             verification_status = "judge_abstain"
@@ -610,6 +736,8 @@ async def _judge_node(state: HalluciGuardState) -> dict[str, Any]:
             message_type="JUDGE_DECISION",
             payload={
                 "decision": decision_val,
+                "answer_status": answer_status_val,
+                "correction_required": corr_required_val,
                 "severity": severity_val,
                 "reason": dumped_judge.get("reason"),
                 "has_correction_request": corr_req is not None,
@@ -620,6 +748,8 @@ async def _judge_node(state: HalluciGuardState) -> dict[str, Any]:
             "judge": dumped_judge,
             "judge_result": dumped_judge,
             "judge_decision": decision_val,
+            "answer_status": answer_status_val,
+            "correction_required": corr_required_val,
             "severity": severity_val,
             "correction_request": corr_req,
             "route": route,
@@ -634,6 +764,8 @@ async def _judge_node(state: HalluciGuardState) -> dict[str, Any]:
                 "completed",
                 latency_ms=elapsed_ms(node_start),
                 decision=decision_val,
+                answer_status=answer_status_val,
+                correction_required=corr_required_val,
                 severity=severity_val,
             ),
         }
@@ -675,7 +807,7 @@ async def _corrector_node(state: HalluciGuardState) -> dict[str, Any]:
                     verdict_str = str(cr.get("verdict", "")).lower()
                     if "contradict" in verdict_str:
                         claims_to_correct.append(cr)
-                        contra_ev.extend(cr.get("evidence", []))
+                        trusted_ev.extend(cr.get("evidence", []))
                     elif "verif" in verdict_str and "unverif" not in verdict_str:
                         claims_to_preserve.append(cr)
                         trusted_ev.extend(cr.get("evidence", []))
@@ -692,11 +824,37 @@ async def _corrector_node(state: HalluciGuardState) -> dict[str, Any]:
             )
 
         def _run_corrector():
-            provider = os.environ.get("HG_CORRECTOR_PROVIDER", "openrouter").strip().lower()
-            if provider == "openrouter":
+            provider = os.environ.get("HG_CORRECTOR_PROVIDER", "").strip().lower()
+            has_openrouter_key = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
+            if (provider == "openrouter" or (not provider and has_openrouter_key)) and has_openrouter_key:
                 from services.openrouter_corrector import OpenRouterCorrectorGenerator
                 return CorrectorAgent(generator=OpenRouterCorrectorGenerator()).correct(corr_req)
-            return CorrectorAgent().correct(corr_req)
+
+            from agents.corrector_agent.corrector.config import CorrectorConfig
+            cfg = CorrectorConfig.from_env()
+            if not cfg.allow_base_model_fallback and not os.path.exists(cfg.model_path):
+                cfg = CorrectorConfig(
+                    max_retries=cfg.max_retries,
+                    evidence_alignment_threshold=cfg.evidence_alignment_threshold,
+                    minimal_edit_min_similarity=cfg.minimal_edit_min_similarity,
+                    max_expansion_ratio=cfg.max_expansion_ratio,
+                    require_entailment_check=cfg.require_entailment_check,
+                    enforce_single_sentence=cfg.enforce_single_sentence,
+                    token_overlap_threshold=cfg.token_overlap_threshold,
+                    token_overlap_margin=cfg.token_overlap_margin,
+                    min_claim_tokens_for_overlap=cfg.min_claim_tokens_for_overlap,
+                    max_prompt_tokens=cfg.max_prompt_tokens,
+                    max_new_tokens=cfg.max_new_tokens,
+                    model_path=cfg.model_path,
+                    base_model_name=cfg.base_model_name,
+                    allow_base_model_fallback=True,
+                    deterministic=cfg.deterministic,
+                )
+            try:
+                agent = CorrectorAgent(config=cfg)
+            except TypeError:
+                agent = CorrectorAgent()
+            return agent.correct(corr_req)
 
         corr_res = await asyncio.to_thread(_run_corrector)
         dumped_corr = _dump(corr_res)
@@ -723,10 +881,38 @@ async def _corrector_node(state: HalluciGuardState) -> dict[str, Any]:
             },
         )
 
+        changed_claims = dumped_corr.get("changed_claims", [])
+        has_unresolved_claims = any(
+            isinstance(c, dict) and str(c.get("action", "")).lower() == "unresolved"
+            for c in changed_claims
+        )
+        is_reconstructed = bool(
+            corrected_text
+            and corrected_text.strip() != original_text.strip()
+            and val_status != "invalid"
+            and exec_status not in ("terminated_unresolved", "failed")
+        )
+
+        if is_reconstructed:
+            corr_status = "applied"
+        elif (
+            exec_status in ("terminated_unresolved", "failed", "fallback")
+            or has_unresolved_claims
+            or val_status == "invalid"
+        ):
+            corr_status = "unresolved" if (exec_status == "terminated_unresolved" or has_unresolved_claims) else "failed"
+        elif exec_status in ("completed", "success") and not state.get("correction_required", False):
+            corr_status = "completed"
+        else:
+            corr_status = "unresolved"
+
+        trace_status = "completed" if is_reconstructed else ("unresolved" if corr_status == "unresolved" else "failed")
+
         return {
             "corrector": dumped_corr,
             "correction_result": dumped_corr,
             "correction_attempt_count": attempt_count,
+            "correction_status": corr_status,
             "final_response": candidate_text,
             "route": "reverifier",
             "inter_agent_bus": bus,
@@ -734,7 +920,7 @@ async def _corrector_node(state: HalluciGuardState) -> dict[str, Any]:
             "trace": add_trace(
                 state,
                 "corrector",
-                "completed" if exec_status in ("completed", "success") else "failed",
+                trace_status,
                 latency_ms=elapsed_ms(node_start),
                 validation_status=val_status,
                 attempt_count=attempt_count,
@@ -767,14 +953,18 @@ async def _reverifier_node(state: HalluciGuardState) -> dict[str, Any]:
             or str(uuid.uuid4())
         )
 
-        claim_texts = []
-        changed = corr_res.get("changed_claims")
-        if changed and isinstance(changed, list):
-            for c in changed:
-                if isinstance(c, dict) and c.get("text"):
-                    claim_texts.append(c["text"])
-                elif isinstance(c, str) and c.strip():
-                    claim_texts.append(c.strip())
+        # Re-extract claims directly from the candidate (corrected) text
+        reverified_claims = _extract_claims_from_draft(candidate_text)
+        claim_texts = [c["text"] for c in reverified_claims] if reverified_claims else []
+
+        if not claim_texts:
+            changed = corr_res.get("changed_claims")
+            if changed and isinstance(changed, list):
+                for c in changed:
+                    if isinstance(c, dict) and c.get("text"):
+                        claim_texts.append(c["text"])
+                    elif isinstance(c, str) and c.strip():
+                        claim_texts.append(c.strip())
 
         if not claim_texts:
             sentences = [s.strip() for s in candidate_text.replace("\n", " ").split(".") if len(s.strip()) > 10]
@@ -811,19 +1001,32 @@ async def _reverifier_node(state: HalluciGuardState) -> dict[str, Any]:
                 status=ExecutionStatus.FAILED,
             )
 
-        remaining_contradictions = sum(
+        total_claims = len(canonical_v_res.claim_reports)
+        supported_count = sum(
+            1 for r in canonical_v_res.claim_reports
+            if str(getattr(r, "verdict", "")).lower() in ("verified", "supported", "verdictlabel.verified")
+        )
+        contradicted_count = sum(
             1 for r in canonical_v_res.claim_reports
             if str(getattr(r, "verdict", "")).lower() in ("contradicted", "verdictlabel.contradicted")
         )
-        passed = (
+        uncertain_count = max(0, total_claims - supported_count - contradicted_count)
+        correction_successful = (
             canonical_v_res.status == ExecutionStatus.COMPLETED
-            and remaining_contradictions == 0
+            and contradicted_count == 0
+            and (supported_count > 0 or total_claims == 0)
         )
+        passed = correction_successful
 
         rev_result = ReverificationResult(
             passed=passed,
             verifier_result=canonical_v_res,
-            remaining_contradictions=remaining_contradictions,
+            remaining_contradictions=contradicted_count,
+            verified_claims=total_claims,
+            supported=supported_count,
+            contradicted=contradicted_count,
+            uncertain=uncertain_count,
+            correction_successful=correction_successful,
             status=ExecutionStatus.COMPLETED if canonical_v_res.status == ExecutionStatus.COMPLETED else ExecutionStatus.FAILED,
         )
         dumped_rev = _dump(rev_result)
@@ -836,14 +1039,23 @@ async def _reverifier_node(state: HalluciGuardState) -> dict[str, Any]:
             message_type="REVERIFICATION_RESULT",
             payload={
                 "passed": passed,
-                "remaining_contradictions": remaining_contradictions,
+                "remaining_contradictions": contradicted_count,
+                "verified_claims": total_claims,
+                "supported": supported_count,
+                "contradicted": contradicted_count,
+                "uncertain": uncertain_count,
+                "correction_successful": correction_successful,
                 "reverification_attempt": rev_attempts,
             },
         )
 
+        rev_status = "passed" if passed else "failed"
+
         return {
             "reverification_result": dumped_rev,
             "reverification_attempt_count": rev_attempts,
+            "reverification_status": rev_status,
+            "corrected_verification_status": "verified" if (passed and contradicted_count == 0) else "unverified",
             "route": "judge",
             "inter_agent_bus": bus,
             "updated_at": utc_now(),
@@ -853,7 +1065,12 @@ async def _reverifier_node(state: HalluciGuardState) -> dict[str, Any]:
                 "completed" if rev_result.status == ExecutionStatus.COMPLETED else "failed",
                 latency_ms=elapsed_ms(node_start),
                 passed=passed,
-                remaining_contradictions=remaining_contradictions,
+                correction_successful=correction_successful,
+                remaining_contradictions=contradicted_count,
+                verified_claims=total_claims,
+                supported=supported_count,
+                contradicted=contradicted_count,
+                uncertain=uncertain_count,
                 attempt_count=rev_attempts,
             ),
         }
@@ -897,9 +1114,23 @@ def _judge_route(state: HalluciGuardState) -> str:
     if state.get("route") == "error":
         return "human_escalation"
     decision = str(state.get("judge_decision", "ACCEPT")).upper()
+
+    if decision == "REJECT":
+        return "reject"
     if decision == "ACCEPT":
         return "memory"
-    elif decision == "CORRECT":
+    if decision == "ABSTAIN":
+        return "human_escalation"
+    if decision == "VERIFY_AGAIN":
+        retry_count = int(state.get("retry_count", 0))
+        max_retries = int(state.get("max_retries", 2))
+        if retry_count >= max_retries:
+            return "human_escalation"
+        return "verifier"
+
+    correction_required = state.get("correction_required")
+    # Corrector must run ONLY when the Judge explicitly requests correction
+    if correction_required is True or decision == "CORRECT":
         active = state.get("active_agents")
         if active is not None and "corrector" not in active:
             return "human_escalation"
@@ -909,16 +1140,7 @@ def _judge_route(state: HalluciGuardState) -> str:
         if corr_attempts >= max_retries:
             return "reject"
         return "corrector"
-    elif decision == "VERIFY_AGAIN":
-        retry_count = int(state.get("retry_count", 0))
-        max_retries = int(state.get("max_retries", 2))
-        if retry_count >= max_retries:
-            return "human_escalation"
-        return "verifier"
-    elif decision == "REJECT":
-        return "reject"
-    elif decision == "ABSTAIN":
-        return "human_escalation"
+
     return "human_escalation"
 
 
@@ -931,34 +1153,50 @@ async def _memory_node(state: HalluciGuardState) -> dict[str, Any]:
 
     # Sourcing verified facts: ONLY if judge accepted and reverification passed (if reverification ran)
     judge_decision = str(state.get("judge_decision", "")).upper()
+    answer_status = str(state.get("answer_status", "")).upper()
     rev_res = state.get("reverification_result")
 
     verified_reports: list[dict[str, Any]] = []
 
-    # Memory must not store anything if Judge did not ACCEPT or if reverification failed
-    if judge_decision == "ACCEPT" or not judge_decision:
+    # Memory must NEVER persist unverified or contradicted facts.
+    # Persist ONLY if Judge accepted and verification confirmed the facts.
+    is_rejected = (
+        judge_decision in ("REJECT", "CORRECT", "ABSTAIN", "VERIFY_AGAIN")
+        or answer_status in ("REJECTED", "REQUIRES_CORRECTION", "INCONCLUSIVE")
+    )
+    is_accepted = not is_rejected and (judge_decision == "ACCEPT" or answer_status == "ACCEPTED" or not judge_decision)
+
+    if is_accepted:
         if rev_res and isinstance(rev_res, dict):
-            if rev_res.get("passed") is True:
+            # If reverification ran, it must have passed with 0 remaining contradictions
+            if rev_res.get("passed") is True and rev_res.get("remaining_contradictions", 0) == 0:
                 v_res = rev_res.get("verifier_result", {})
                 for cr in v_res.get("claim_reports", []):
                     verdict_str = str(cr.get("verdict", "")).lower()
-                    if "contradict" not in verdict_str:
+                    if verdict_str in ("verified", "supported", "verdictlabel.verified") and cr.get("evidence"):
                         verified_reports.append(cr)
         elif not rev_res:
             v_res = state.get("verifier_result")
             if v_res and isinstance(v_res, dict):
                 for cr in v_res.get("claim_reports", []):
                     verdict_str = str(cr.get("verdict", "")).lower()
-                    if "contradict" not in verdict_str:
+                    if verdict_str in ("verified", "supported", "verdictlabel.verified") and cr.get("evidence"):
                         verified_reports.append(cr)
             if not verified_reports:
                 claim_evidence = state.get("verifier", {}).get("claim_evidence", [])
-                verified_reports = [r for r in claim_evidence if "contradict" not in str(r.get("verdict", "")).lower()]
+                for r in claim_evidence:
+                    v_raw = str(r.get("verdict", "")).lower()
+                    if v_raw in ("verified", "supported", "verdictlabel.verified") and r.get("evidence"):
+                        verified_reports.append(r)
 
     if not verified_reports:
         memory = {
             "stored": [],
             "count": 0,
+            "stored_facts_count": 0,
+            "fact_ids": [],
+            "persisted_fact_ids": [],
+            "status": "skipped",
             "knowledge_graph": False,
             "vector_memory": False,
             "skipped_reason": "no_verified_claims_to_persist",
@@ -979,6 +1217,7 @@ async def _memory_node(state: HalluciGuardState) -> dict[str, Any]:
         return {
             "memory": memory,
             "memory_result": _dump(mem_result),
+            "persisted_fact_ids": [],
             "final_response": state.get("final_response") or state.get("llm_response", ""),
             "inter_agent_bus": bus,
             "updated_at": utc_now(),
@@ -1020,33 +1259,48 @@ async def _memory_node(state: HalluciGuardState) -> dict[str, Any]:
                     metadata={
                         "execution_id": state.get("execution_id", ""),
                         "request_id": state.get("request_id", ""),
+                        "provenance": "halluciguard_verifier",
+                        "verification_status": "SUPPORTED",
+                        "verified_at": utc_now(),
                     },
                 )
                 stored.append(_dump(await memory_agent.store_fact(req)))
         finally:
             await memory_agent.close()
 
+        fact_ids = [
+            str(f.get("fact_id")) for f in stored
+            if isinstance(f, dict) and f.get("fact_id")
+        ]
+        if not fact_ids and stored:
+            fact_ids = [str(f.get("fact_id", f"fact-{i}")) for i, f in enumerate(stored)]
+
         memory = {
             "stored": stored,
             "count": len(stored),
+            "stored_facts_count": len(stored),
+            "fact_ids": fact_ids,
+            "persisted_fact_ids": fact_ids,
+            "status": "stored",
             "knowledge_graph": True,
             "vector_memory": True,
         }
         mem_result = MemoryResult(
             status=MemoryStatus.STORED,
             stored_count=len(stored),
-            fact_ids=[f.get("fact_id", f"fact-{i}") for i, f in enumerate(stored)],
+            fact_ids=fact_ids,
         )
         bus = add_bus_message(
             state,
             source_agent="memory",
             target_agent="supervisor",
             message_type="MEMORY_WRITE_RESULT",
-            payload={"stored_count": len(stored), "status": "stored"},
+            payload={"stored_count": len(stored), "status": "stored", "fact_ids": fact_ids},
         )
         return {
             "memory": memory,
             "memory_result": _dump(mem_result),
+            "persisted_fact_ids": fact_ids,
             "final_response": state.get("final_response") or state.get("llm_response", ""),
             "inter_agent_bus": bus,
             "updated_at": utc_now(),
@@ -1056,6 +1310,7 @@ async def _memory_node(state: HalluciGuardState) -> dict[str, Any]:
                 "completed",
                 latency_ms=elapsed_ms(node_start),
                 stored_count=len(stored),
+                fact_ids=fact_ids,
             ),
         }
     except Exception as exc:
@@ -1242,6 +1497,7 @@ async def run_verification(
             "user_query": user_query,
             "llm_response": llm_response,
             "draft_response": llm_response,
+            "draft_answer": llm_response,
             "generation_mode": generation_mode,
             "conversation_history": conversation_history or [],
             "domain": domain,

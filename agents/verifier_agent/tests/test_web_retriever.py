@@ -288,6 +288,7 @@ class TestLiveIntegration:
     """Integration tests requiring real API access."""
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(not os.getenv("TAVILY_API_KEY"), reason="TAVILY_API_KEY not set")
     async def test_live_tavily_search(self):
         from adapters.web_retriever import TavilyWebRetriever
 
@@ -300,6 +301,7 @@ class TestLiveIntegration:
         assert all(len(p.snippet) > 10 for p in passages)
 
     @pytest.mark.asyncio
+    @pytest.mark.skipif(not os.getenv("TAVILY_API_KEY"), reason="TAVILY_API_KEY not set")
     async def test_live_full_chain(self):
         """Prove: Tavily → BGE → NLI → Scoring with real data."""
         from adapters.web_retriever import TavilyWebRetriever

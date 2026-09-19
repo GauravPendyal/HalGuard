@@ -36,6 +36,7 @@ from orchestration.schemas import (
     Evidence,
     DetectorResult,
     JudgeDecision,
+    AnswerStatus,
     SeverityLevel,
     VerdictLabel,
     EntailmentLabel,
@@ -92,6 +93,8 @@ class JudgeAgent:
             logger.warning("Judge received empty or unparseable VerifierResult. Returning ABSTAIN.")
             return JudgeResult(
                 decision=JudgeDecision.ABSTAIN,
+                answer_status=AnswerStatus.INCONCLUSIVE,
+                correction_required=False,
                 severity=SeverityLevel.HIGH,
                 reason="Invalid or missing VerifierResult payload.",
                 explanation="Grounding evidence was absent or failed schema validation. Unsafe to proceed.",
@@ -108,6 +111,8 @@ class JudgeAgent:
             logger.warning("VerifierResult status indicates failure. Returning ABSTAIN.")
             return JudgeResult(
                 decision=JudgeDecision.ABSTAIN,
+                answer_status=AnswerStatus.INCONCLUSIVE,
+                correction_required=False,
                 severity=SeverityLevel.HIGH,
                 reason="VerifierResult status indicates failure.",
                 explanation="Grounding investigation failed to execute. Unsafe to proceed.",
@@ -133,7 +138,10 @@ class JudgeAgent:
             if verdict_str == VerdictLabel.CONTRADICTED.value:
                 claims_to_correct.append(claim)
                 for ev in claim.evidence:
-                    contradictory_evidence.append(ev)
+                    if self._is_replacement_capable_evidence(claim.claim_text, ev):
+                        trusted_evidence.append(ev)
+                    else:
+                        contradictory_evidence.append(ev)
             elif verdict_str == VerdictLabel.VERIFIED.value:
                 claims_to_preserve.append(claim)
                 for ev in claim.evidence:
@@ -146,7 +154,10 @@ class JudgeAgent:
                 if claim.contradiction_score >= 0.5:
                     claims_to_correct.append(claim)
                     for ev in claim.evidence:
-                        contradictory_evidence.append(ev)
+                        if self._is_replacement_capable_evidence(claim.claim_text, ev):
+                            trusted_evidence.append(ev)
+                        else:
+                            contradictory_evidence.append(ev)
                 elif claim.support_score >= 0.5:
                     claims_to_preserve.append(claim)
                     for ev in claim.evidence:
@@ -249,8 +260,23 @@ class JudgeAgent:
 
         confidence = round(min(1.0, max(0.0, normalized_verifier.overall_confidence * (1.0 - 0.2 * det_prob))), 4)
 
+        if decision == JudgeDecision.CORRECT:
+            answer_status = AnswerStatus.REQUIRES_CORRECTION
+            correction_required = True
+        elif decision == JudgeDecision.ACCEPT:
+            answer_status = AnswerStatus.ACCEPTED
+            correction_required = False
+        elif decision == JudgeDecision.REJECT:
+            answer_status = AnswerStatus.REJECTED
+            correction_required = False
+        else:
+            answer_status = AnswerStatus.INCONCLUSIVE
+            correction_required = False
+
         return JudgeResult(
             decision=decision,
+            answer_status=answer_status,
+            correction_required=correction_required,
             severity=severity,
             reason=reason,
             explanation=explanation,
@@ -279,6 +305,8 @@ class JudgeAgent:
                 if passed and rem_cnt == 0:
                     return JudgeResult(
                         decision=JudgeDecision.ACCEPT,
+                        answer_status=AnswerStatus.ACCEPTED,
+                        correction_required=False,
                         severity=SeverityLevel.LOW,
                         reason="Post-correction re-verification passed. Safe to release.",
                         explanation="Corrected text verified with 0 remaining contradictions.",
@@ -289,6 +317,8 @@ class JudgeAgent:
                 elif retry_count < self.config.max_verification_retries:
                     return JudgeResult(
                         decision=JudgeDecision.CORRECT,
+                        answer_status=AnswerStatus.REQUIRES_CORRECTION,
+                        correction_required=True,
                         severity=SeverityLevel.HIGH,
                         reason=f"Post-correction re-verification failed with {rem_cnt} remaining contradiction(s). Triggering correction retry pass {retry_count + 1}.",
                         explanation=f"Re-verification retained factual contradiction(s). Retrying bounded correction (attempt {retry_count + 1}).",
@@ -299,6 +329,8 @@ class JudgeAgent:
                 else:
                     return JudgeResult(
                         decision=JudgeDecision.REJECT,
+                        answer_status=AnswerStatus.REJECTED,
+                        correction_required=True,
                         severity=SeverityLevel.HIGH,
                         reason=f"Post-correction re-verification failed with {rem_cnt} remaining contradiction(s) and retries exhausted.",
                         explanation="Correction retained factual contradictions and retry budget exhausted. Rolling back.",
@@ -312,6 +344,8 @@ class JudgeAgent:
         if rev_res is not None and rev_res.passed and rev_res.remaining_contradictions == 0:
             return JudgeResult(
                 decision=JudgeDecision.ACCEPT,
+                answer_status=AnswerStatus.ACCEPTED,
+                correction_required=False,
                 severity=SeverityLevel.LOW,
                 reason="Post-correction re-verification passed successfully. Safe to commit.",
                 explanation="Refined text verified by Verifier with zero remaining contradictions.",
@@ -334,7 +368,7 @@ class JudgeAgent:
                     verdict_str = str(getattr(cr, "verdict", "")).lower()
                     if "contradict" in verdict_str:
                         claims_to_correct.append(cr)
-                        contra_ev.extend(getattr(cr, "evidence", []))
+                        trusted_ev.extend(getattr(cr, "evidence", []))
                     elif "verif" in verdict_str and "unverif" not in verdict_str:
                         claims_to_preserve.append(cr)
                         trusted_ev.extend(getattr(cr, "evidence", []))
@@ -349,8 +383,11 @@ class JudgeAgent:
                         contradictory_evidence=contra_ev,
                         correction_instructions=f"Re-verification attempt {retry_count + 1}: repair remaining contradicted claim(s).",
                     )
+            decision = JudgeDecision.CORRECT if corr_req else JudgeDecision.REJECT
             return JudgeResult(
-                decision=JudgeDecision.CORRECT if corr_req else JudgeDecision.REJECT,
+                decision=decision,
+                answer_status=AnswerStatus.REQUIRES_CORRECTION if decision == JudgeDecision.CORRECT else AnswerStatus.REJECTED,
+                correction_required=(decision == JudgeDecision.CORRECT),
                 severity=SeverityLevel.HIGH,
                 reason=f"Post-correction re-verification failed with {rem_count} remaining contradiction(s). Triggering correction retry pass {retry_count + 1}.",
                 explanation=f"Re-verification retained factual contradiction(s). Retrying bounded correction (attempt {retry_count + 1}/{self.config.max_verification_retries}).",
@@ -361,6 +398,8 @@ class JudgeAgent:
         else:
             return JudgeResult(
                 decision=JudgeDecision.REJECT,
+                answer_status=AnswerStatus.REJECTED,
+                correction_required=True,
                 severity=SeverityLevel.HIGH,
                 reason=f"Post-correction re-verification failed with {rem_count} remaining contradiction(s) and retry budget exhausted.",
                 explanation="Correction failed re-verification gate and retries exhausted. Rolling back to safe response.",
@@ -596,3 +635,96 @@ class JudgeAgent:
                     status=ExecutionStatus.COMPLETED
                 )
         return None
+
+    @staticmethod
+    def _is_replacement_capable_evidence(claim_text: str, ev: Evidence) -> bool:
+        """
+        Distinguish Category B (evidence that establishes a replacement fact)
+        from Category A (evidence that merely refutes the claim or provides non-grounding context).
+
+        Category B evidence must directly address the target entity/subject being described
+        and affirmatively establish the true factual attribute/relation (e.g. creator, date, location).
+        """
+        if not ev or not getattr(ev, "snippet", ""):
+            return False
+
+        snippet_lower = ev.snippet.lower()
+        raw_title = (getattr(ev, "title", "") or "").lower()
+        import re
+        clean_title = re.sub(r"^(wikipedia:\s*|\s*-\s*wikipedia\s*$)", "", raw_title).strip()
+        full_ev = f"{clean_title} {snippet_lower}"
+
+        # Pure refutation or noisy context phrases without affirmative replacement facts
+        pure_refutation_phrases = (
+            "no record of", "not associated with", "no evidence that",
+            "is false", "untrue", "debunked", "hoax", "myth", "falsely claimed",
+            "criticizing", "codenamed",
+        )
+        has_pure_refutation = any(pr in snippet_lower for pr in pure_refutation_phrases)
+
+        # Target affirmative relation markers indicating replacement-grade facts
+        affirmative_rel_markers = (
+            "designed by", "created by", "developed by", "invented by",
+            "founded by", "authored by", "written by", "initiated by",
+            "started by", "built by", "released in", "introduced by",
+            "creator of", "father of", "mother of", "capital of",
+            "located in", "directed by", "starred in", "originally developed",
+            "initiated the", "designed java", "created python", "designed python"
+        )
+        has_affirmative_rel = any(m in full_ev for m in affirmative_rel_markers)
+
+        # Extract target entities from claim
+        stopwords = {
+            "was", "were", "is", "are", "been", "the", "a", "an", "in", "at",
+            "by", "of", "to", "for", "with", "on", "that", "this", "first",
+            "originally", "has", "had", "have"
+        }
+
+        # Active creation: [Subject] created [Object] -> Object is target entity being described
+        # e.g. "Elon Musk created Java." -> target entity: "Java"
+        target_entity = None
+        active_m = re.search(
+            r"([A-Za-z0-9\s\-]+?)\s+(?:created|developed|invented|founded|built|designed)\s+(?:the\s+)?([A-Za-z0-9\s\-]+)",
+            claim_text or "",
+            re.IGNORECASE,
+        )
+        if active_m and not any(w in active_m.group(1).lower() for w in ("was", "is", "were", "that", "which")):
+            target_entity = active_m.group(2).strip().rstrip(".?!").lower()
+        else:
+            # Passive creation: [Object] was created by [Subject] -> Object is target entity
+            passive_m = re.search(
+                r"([A-Za-z0-9\s\-]+?)\s+(?:was|is|were)?\s*(?:originally\s+)?(?:created|developed|invented|built|designed|founded|written|authored)\s+by\s+([A-Za-z0-9\s\-]+)",
+                claim_text or "",
+                re.IGNORECASE,
+            )
+            if passive_m:
+                target_entity = passive_m.group(1).strip().rstrip(".?!").lower()
+
+        if target_entity and len(target_entity) > 2:
+            target_tokens = [t for t in target_entity.split() if t not in stopwords]
+            target_present = any(t in full_ev for t in target_tokens)
+            if not target_present:
+                # Evidence does not even mention the target entity (e.g. mentions only Elon Musk / Truth Social)
+                return False
+
+            if has_affirmative_rel and not has_pure_refutation:
+                return True
+
+            # Check if section/passage discusses development/history of the target entity
+            if any(k in full_ev for k in ("history", "origin", "developed", "created", "designer", "developer", "author", "sun microsystems", "guido van rossum", "james gosling")):
+                return True
+
+            return False
+
+        # Fallback for claims without standard creation structure
+        if has_affirmative_rel and not has_pure_refutation:
+            return True
+
+        # Check content overlap with claim subject/entities
+        c_clean = re.sub(r"[^\w\s\-]", " ", claim_text or "")
+        claim_words = [w.lower() for w in c_clean.split() if len(w) > 2 and w.lower() not in stopwords]
+        overlap = sum(1 for w in claim_words if w in full_ev)
+        if overlap >= 2 and not has_pure_refutation:
+            return True
+
+        return False

@@ -119,6 +119,14 @@ class VerificationPipeline:
                 webhook_secret=self.settings.n8n_webhook_secret,
                 timeout_seconds=self.settings.n8n_timeout_seconds,
             )
+            if getattr(self.settings, "n8n_retrieval_enabled", True):
+                missing = self._n8n_client.validate_configuration()
+                if missing:
+                    self.logger.warning(
+                        "n8n retrieval is enabled (N8N_RETRIEVAL_ENABLED=true), but required configuration "
+                        "variable(s) are missing: %s. Verify .env settings.",
+                        ", ".join(missing),
+                    )
         return self._n8n_client
 
     # ------------------------------------------------------------------
@@ -391,6 +399,17 @@ class VerificationPipeline:
                         all_raw: List[Passage] = []
                         n8n_trace_obj = None
 
+                        search_queries = self.query_expander.generate_search_queries(
+                            sub_claim, validated_domain
+                        )
+                        if not search_queries:
+                            search_queries = [expanded_query]
+
+                        relational_queries = [
+                            q for q in search_queries
+                            if q.strip().lower() != sub_claim.strip().lower()
+                        ]
+
                         # ── N8N Retrieval Service V2 Integration ──────────────
                         if getattr(self.settings, "n8n_retrieval_enabled", True):
                             force_tav = (payload.retrieval_mode == "tavily_only")
@@ -412,32 +431,26 @@ class VerificationPipeline:
                                 )
                                 adapter_failures.append(f"n8n:{str(n8n_res.error)[:80]}")
 
-                        # ── Python Retrieval Fallback (when n8n is disabled / failed / returned 0) ──
-                        if not all_raw:
-                            search_queries = self.query_expander.generate_search_queries(
-                                sub_claim, validated_domain
-                            )
-                            if not search_queries:
-                                search_queries = [expanded_query]
-
-                            for q in search_queries:
-                                try:
-                                    search_kwargs = {}
-                                    if hasattr(adapter, 'last_retrieval_trace'):
-                                        search_kwargs['retrieval_mode'] = payload.retrieval_mode
-                                    if getattr(payload, 'source_mode', None):
-                                        search_kwargs['source_mode'] = payload.source_mode
-                                    q_passages = await adapter.search(q, **search_kwargs)
-                                    all_raw.extend(q_passages)
-                                except Exception as e:
-                                    self.logger.error(
-                                        "Adapter retrieval failed for query '%s': %s",
-                                        q,
-                                        e,
-                                    )
-                                    adapter_failures.append(
-                                        f"{validated_domain}:{str(e)[:100]}"
-                                    )
+                        # ── Python Retrieval (dispatches relational queries or full fallback) ──
+                        queries_to_fetch = search_queries if not all_raw else relational_queries[:2]
+                        for q in queries_to_fetch:
+                            try:
+                                search_kwargs = {}
+                                if hasattr(adapter, 'last_retrieval_trace'):
+                                    search_kwargs['retrieval_mode'] = payload.retrieval_mode
+                                if getattr(payload, 'source_mode', None):
+                                    search_kwargs['source_mode'] = payload.source_mode
+                                q_passages = await adapter.search(q, **search_kwargs)
+                                all_raw.extend(q_passages)
+                            except Exception as e:
+                                self.logger.error(
+                                    "Adapter retrieval failed for query '%s': %s",
+                                    q,
+                                    e,
+                                )
+                                adapter_failures.append(
+                                    f"{validated_domain}:{str(e)[:100]}"
+                                )
 
                         # Attach n8n trace to adapter trace or initialize retrieval trace
                         if n8n_trace_obj:
@@ -477,7 +490,7 @@ class VerificationPipeline:
                         hybrid_passages = self.hybrid_retriever.retrieve(
                             sub_claim,
                             aggregated_passages,
-                            k=5,
+                            k=max(15, len(raw_passages)),
                             dense_model=route.dense_model,
                         )
 

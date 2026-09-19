@@ -32,6 +32,8 @@ STEP 6 STATUS — Corrector execution integration:
 
 from __future__ import annotations
 
+import logging
+import os
 from typing import Any, Dict, List, Optional, Union
 
 from orchestration.schemas import CorrectionRequest, CorrectionResult
@@ -49,6 +51,7 @@ from .adapter import (
 from .config import CorrectorConfig
 from .contracts import (
     ChangedClaim,
+    GenerationOutcome,
     GroundedPlan,
     InternalCorrectionRequest,
     ValidationOutcome,
@@ -196,7 +199,9 @@ class CorrectorAgent:
         #    evidence. No grounded target -> nothing to safely correct.
         plan: GroundedPlan = ground_request(internal, self.config)
         if not plan.has_targets:
-            return build_unresolved_result(original)
+            res = build_unresolved_result(original)
+            _instrument_pipeline(internal, plan, None, None, None, res, self._generator, self.config)
+            return res
 
         # 3) Step 4: build prompts and generate, using ONE ModelClient instance.
         client = ModelClient(self.config, generator=self._generator)
@@ -219,25 +224,31 @@ class CorrectorAgent:
         # 5) No-silent-fallback: an unavailable model is degraded/unvalidated with
         #    the original preserved — never the base model, never a correction.
         if not outcome.model_status.available:
-            return build_model_unavailable_result(
+            res = build_model_unavailable_result(
                 original, reason=outcome.model_status.reason or "model_unavailable"
             )
+            _instrument_pipeline(internal, plan, generation, outcome, None, res, self._generator, self.config)
+            return res
 
         # 6) Nothing safely accepted (all rejected / unresolved / abstained) ->
         #    original preserved as terminated_unresolved. Abstention lands here:
         #    it is never completed or valid.
         if not outcome.has_accepted:
-            return build_unresolved_result(
+            res = build_unresolved_result(
                 original,
                 changed_claims=_unresolved_changed_claims(outcome) or None,
                 attempt_count=outcome.attempt_count,
             )
+            _instrument_pipeline(internal, plan, generation, outcome, None, res, self._generator, self.config)
+            return res
 
         # 7) Step 6: deterministic offset splice of ONLY accepted sentences.
         #    Any integrity breach preserves the original verbatim (fail closed).
         rebuilt: Reconstruction = reconstruct(original, plan, outcome)
         if not rebuilt.ok:
-            return build_reconstruction_fallback_result(original)
+            res = build_reconstruction_fallback_result(original)
+            _instrument_pipeline(internal, plan, generation, outcome, rebuilt, res, self._generator, self.config)
+            return res
 
         # 8) Map to the canonical result. Fully resolved (every grounded target
         #    accepted and no authorized claim skipped) is completed/valid;
@@ -248,12 +259,146 @@ class CorrectorAgent:
             and not plan.skipped_claims
         )
         if fully_resolved:
-            return build_completed_result(
+            res = build_completed_result(
                 original, rebuilt.text, changed, attempt_count=outcome.attempt_count
             )
-        return build_partial_result(
-            original, rebuilt.text, changed, attempt_count=outcome.attempt_count
-        )
+        else:
+            res = build_partial_result(
+                original, rebuilt.text, changed, attempt_count=outcome.attempt_count
+            )
+        _instrument_pipeline(internal, plan, generation, outcome, rebuilt, res, self._generator, self.config)
+        return res
+
+
+def _instrument_pipeline(
+    internal: InternalCorrectionRequest,
+    plan: Optional[GroundedPlan],
+    generation: Optional[GenerationOutcome],
+    outcome: Optional[ValidationOutcome],
+    rebuilt: Optional[Reconstruction],
+    result: CorrectionResult,
+    generator: Optional[Generator],
+    config: CorrectorConfig,
+) -> None:
+    """Live instrumentation and audit logger for Corrector execution path."""
+    if os.environ.get("HG_CORRECTOR_INSTRUMENT", "1").strip().lower() not in ("1", "true", "yes", "on"):
+        return
+
+    try:
+        logger = logging.getLogger("halluciguard.corrector")
+        lines = [
+            "\n" + "=" * 80,
+            "[AGENT] CORRECTOR AGENT — RUNTIME TRACE & INSTRUMENTATION",
+            "=" * 80,
+            "1. EXACT CORRECTOR INPUT PAYLOAD (Secrets Redacted):",
+            f"   • User Query: {internal.user_query}",
+            f"   • Original Response: \"{internal.original_response}\"",
+            f"   • Claims to Correct ({len(internal.claims_to_correct)}):",
+        ]
+        for c in internal.claims_to_correct:
+            ev_summary = [f"[{e.evidence_id}: {e.snippet[:60]}...]" for e in c.evidence]
+            c_txt = getattr(c, "claim_text", getattr(c, "text", ""))
+            lines.append(f"     - [{c.claim_id}] \"{c_txt}\" (Evidence: {ev_summary})")
+        lines.append(f"   • Claims to Preserve ({len(internal.claims_to_preserve)}):")
+        for c in internal.claims_to_preserve:
+            c_txt = getattr(c, "claim_text", getattr(c, "text", ""))
+            lines.append(f"     - [{c.claim_id}] \"{c_txt}\"")
+        lines.append(f"   • Trusted Evidence ({len(internal.trusted_evidence)} items):")
+        for e in internal.trusted_evidence:
+            lines.append(f"     - [{e.evidence_id}] ({e.source}): \"{e.snippet[:80]}...\"")
+        lines.append(f"   • Contradictory Evidence ({len(internal.contradictory_evidence)} items):")
+        for e in internal.contradictory_evidence:
+            lines.append(f"     - [{e.evidence_id}] ({e.source}): \"{e.snippet[:80]}...\"")
+        lines.append(f"   • Correction Instructions: {internal.correction_instructions}")
+
+        lines.append("\n2. CORRECTION PLAN GENERATED:")
+        if plan:
+            lines.append(f"   • Spans Detected ({len(plan.spans)}): {[s.sentence_id for s in plan.spans]}")
+            lines.append(f"   • Grounded Targets ({len(plan.grounded_targets)}):")
+            for gt in plan.grounded_targets:
+                lines.append(f"     - Target [{gt.sentence_id}]: \"{gt.target.original_text}\"")
+                lines.append(f"       Supporting Evidence IDs: {[e.evidence_id for e in gt.supporting]}")
+            lines.append(f"   • Skipped Claims ({len(plan.skipped_claims)}):")
+            for sc in plan.skipped_claims:
+                lines.append(f"     - Claim [{sc.claim_id}] skipped: reason={sc.reason} ({sc.detail})")
+        else:
+            lines.append("   • No plan generated.")
+
+        lines.append("\n3. PROMPT SENT TO MODEL:")
+        if generation and generation.prompts:
+            for p in generation.prompts:
+                lines.append(f"   --- Prompt for Target [{p.sentence_id}] ---")
+                lines.append(f"   [System Text]:\n{p.system_text}")
+                lines.append(f"   [Prompt Text]:\n{p.prompt_text}")
+        else:
+            lines.append("   • No prompt generated.")
+
+        lines.append("\n4. MODEL PROVIDER / MODEL NAME:")
+        if generator:
+            p_name = getattr(generator, "provider_name", getattr(generator, "kind", type(generator).__name__))
+            m_name = getattr(generator, "model", "custom")
+            lines.append(f"   • Provider: {p_name}")
+            lines.append(f"   • Model:    {m_name}")
+        elif generation and generation.model_status:
+            lines.append(f"   • Provider: local_pytorch ({generation.model_status.kind})")
+            lines.append(f"   • Model:    {config.base_model_name}")
+        else:
+            lines.append("   • Provider: unknown / not loaded")
+
+        lines.append("\n5. HTTP/API STATUS:")
+        if generator and hasattr(generator, "last_status") and generator.last_status:
+            lines.append(f"   • HTTP/API Status: {generator.last_status}")
+        elif generator:
+            lines.append("   • HTTP/API Status: N/A (External Generator)")
+        else:
+            lines.append("   • HTTP/API Status: N/A (Local PyTorch In-Memory Inference)")
+
+        lines.append("\n6. RAW MODEL RESPONSE BEFORE PARSING:")
+        if generation and generation.candidates:
+            for idx, cand in enumerate(generation.candidates, 1):
+                raw = cand.raw_output if cand.raw_output else f"<Empty/Error: {cand.rejection_reason}>"
+                lines.append(f"   --- Candidate #{idx} Raw ---:\n{raw}")
+        else:
+            lines.append("   • No candidate outputs generated.")
+
+        lines.append("\n7. PARSED CORRECTION:")
+        if generation and generation.candidates:
+            for idx, cand in enumerate(generation.candidates, 1):
+                lines.append(f"   --- Candidate #{idx} Parsed ---:")
+                lines.append(f"   • Status:           {cand.status}")
+                lines.append(f"   • Corrected Text:   \"{cand.corrected_text}\"")
+                lines.append(f"   • Rejection Reason: {cand.rejection_reason or 'None'}")
+                lines.append(f"   • Evidence Used:    {cand.evidence_ids_used}")
+        else:
+            lines.append("   • None.")
+
+        lines.append("\n8. VALIDATOR RESULT & REASON:")
+        if outcome and (outcome.accepted or outcome.unresolved_targets):
+            for tr in (*outcome.accepted, *outcome.unresolved_targets):
+                lines.append(f"   --- Target [{tr.sentence_id}] Decision: {tr.decision} ---")
+                lines.append(f"   • Attempts: {tr.attempt_count}")
+                for a in tr.attempts:
+                    lines.append(f"     - Attempt #{a.attempt_number}: passed={a.validation.passed}, failures={a.validation.failure_codes}, align_score={a.validation.evidence_alignment_score:.3f}")
+        else:
+            lines.append("   • No validation targets evaluated.")
+
+        lines.append("\n9. FALLBACK-TO-ORIGINAL ACTIVATION:")
+        is_fallback = (result.corrected_text == result.original_text)
+        lines.append(f"   • Fallback to Original Activated: {is_fallback}")
+        if is_fallback:
+            lines.append(f"   • Fallback Reason: status={result.status}, validation_status={result.validation_status}")
+        else:
+            lines.append(f"   • Correction Applied: status={result.status}, validation_status={result.validation_status}")
+
+        lines.append("\n10. FINAL RECONSTRUCTED ANSWER:")
+        lines.append(f"   \"{result.corrected_text}\"")
+        lines.append("=" * 80 + "\n")
+
+        output_str = "\n".join(lines)
+        logger.info(output_str)
+        print(output_str)
+    except Exception as err:
+        logging.getLogger("halluciguard.corrector").debug(f"Instrumentation suppressed error: {err}")
 
 
 def run_correction(

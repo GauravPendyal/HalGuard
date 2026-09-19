@@ -75,7 +75,9 @@ _PREFIX_RE = re.compile(
 )
 
 # Coarse segmentation on semicolons, newlines, and numbered-list markers.
-_COARSE_SPLIT_RE = re.compile(r"[;\n]+|(?:^|\s)\d+\.\s+")
+_COARSE_SPLIT_RE = re.compile(
+    r"[;\n]+|(?:^|\r?\n)\s*\d+[\.\)]\s+|(?<=[.!?])\s+\d{1,3}[\.\)]\s+"
+)
 
 _MAX_CLAIMS = 5
 

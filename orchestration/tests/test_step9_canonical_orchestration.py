@@ -39,6 +39,7 @@ from orchestration.graph import (
     _corrector_node,
     _reverifier_node,
     _memory_node,
+    _extract_claims_from_draft,
     build_verification_graph,
 )
 from orchestration.schemas import (
@@ -849,3 +850,309 @@ def test_real_corrector_agent_fails_closed_without_model():
     assert result.corrected_text == "Python was created by Elon Musk."
     assert result.validation_status in ("unvalidated", "warning")
     assert result.status in ("degraded", "terminated_unresolved")
+
+
+# ===========================================================================
+# U. Semantic Telemetry Disambiguation Tests
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_verifier_sets_draft_verification_status(monkeypatch):
+    """Verifier node must set draft_verification_status and verifier['draft_verification_status']."""
+    from orchestration.graph import _verifier_node
+
+    class FakePipeline:
+        async def verify(self, payload):
+            return {
+                "query_id": "q1",
+                "domain": "general",
+                "claim_evidence": [
+                    {
+                        "claim_id": "c1",
+                        "claim_text": "Python was created by Elon Musk.",
+                        "verdict": "contradicted",
+                        "evidence": [],
+                    }
+                ],
+            }
+
+    monkeypatch.setattr("orchestration.graph._verifier_imports", lambda: (FakePipeline, lambda **kw: kw, lambda **kw: type("P", (), kw)()))
+    state = make_base_state(draft_answer="Python was created by Elon Musk in 1999.")
+    res = await _verifier_node(state)
+
+    assert res["draft_verification_status"] == "contradicted"
+    assert res["original_verification_status"] == "contradicted"
+    assert res["verification_status"] == "contradicted"
+    assert res["verifier"]["verification_status"] == "contradicted"
+    assert res["verifier"]["draft_verification_status"] == "contradicted"
+
+
+@pytest.mark.asyncio
+async def test_memory_node_returns_persisted_fact_ids(monkeypatch):
+    """Memory node must populate fact_ids and persisted_fact_ids in memory dict and state."""
+    from orchestration.schemas import VerifierResult as CanonicalVerifierResult, ClaimReport, VerdictLabel, Evidence, EntailmentLabel
+    from agents.memory_agent.schemas.models import StoreFactResponse
+
+    stored_res = StoreFactResponse(
+        fact_id="fact-uuid-12345",
+        entities_created=2,
+        edges_created=1,
+        pattern_updated=False,
+        trust_updates=[],
+        stored=True,
+    )
+
+    class FakeMemoryAgent:
+        async def initialize(self):
+            pass
+        async def store_fact(self, req):
+            return stored_res
+        async def close(self):
+            pass
+
+    monkeypatch.setattr("agents.memory_agent.memory.memory_agent.MemoryAgent", FakeMemoryAgent)
+
+    v_res = CanonicalVerifierResult(
+        query_id="q1",
+        domain="general",
+        claim_reports=[
+            ClaimReport(
+                claim_id="c1",
+                claim_text="Python was created by Guido van Rossum in 1989.",
+                verdict=VerdictLabel.VERIFIED,
+                evidence=[
+                    Evidence(
+                        evidence_id="e1",
+                        title="Python",
+                        source="wikipedia",
+                        snippet="Python was created by Guido van Rossum.",
+                        entailment_label=EntailmentLabel.ENTAILMENT,
+                        entailment_score=0.95,
+                    )
+                ],
+            )
+        ],
+        evidence=[],
+        overall_confidence=0.95,
+    )
+
+    state = make_base_state(
+        judge_decision="ACCEPT",
+        answer_status="ACCEPTED",
+        reverification_result={
+            "passed": True,
+            "remaining_contradictions": 0,
+            "verifier_result": v_res.model_dump(),
+        },
+    )
+
+    res = await _memory_node(state)
+
+    assert res["memory"]["status"] == "stored"
+    assert res["memory"]["count"] == 1
+    assert "fact-uuid-12345" in res["memory"]["persisted_fact_ids"]
+    assert "fact-uuid-12345" in res["memory"]["fact_ids"]
+    assert "fact-uuid-12345" in res["persisted_fact_ids"]
+    assert res["memory_result"]["fact_ids"] == ["fact-uuid-12345"]
+
+
+# ===========================================================================
+# V. Scenario D / Correction Status Failure Semantics Tests (Task 7)
+# ===========================================================================
+
+@pytest.mark.asyncio
+async def test_corrector_failure_reports_unresolved_and_preserves_correction_required(monkeypatch):
+    """
+    Task 7.a: Contradicted draft + all correction attempts fail validation:
+      - correction_status is 'unresolved' (FAILED/UNRESOLVED)
+      - correction_required remains True
+      - final answer is rejected with safe fallback
+      - memory is skipped
+    """
+    from orchestration.graph import _corrector_node, _judge_node, _judge_route, _reject_node
+    from orchestration.schemas import ValidationStatus, ExecutionStatus
+
+    # Mock Corrector that returns terminated_unresolved
+    class FakeFailedCorrector:
+        def __init__(self, *a, **kw):
+            pass
+        def correct(self, req):
+            return CorrectionResult(
+                execution_id=req.execution_id,
+                original_text=req.original_response,
+                corrected_text=req.original_response,
+                changed_claims=[{"claim_id": "c1", "action": "unresolved", "original": req.original_response}],
+                validation_status=ValidationStatus.WARNING,
+                status=ExecutionStatus.TERMINATED_UNRESOLVED,
+                attempt_count=2,
+            )
+
+    monkeypatch.setattr("agents.corrector_agent.corrector.CorrectorAgent", FakeFailedCorrector)
+
+    # 1. Test Corrector Node output
+    state = make_base_state(
+        draft_answer="Atlantis has a population of exactly 12,847,392 people.",
+        llm_response="Atlantis has a population of exactly 12,847,392 people.",
+        correction_required=True,
+        correction_request={
+            "execution_id": "e1",
+            "user_query": "What is the population of Atlantis?",
+            "original_response": "Atlantis has a population of exactly 12,847,392 people.",
+            "claims_to_correct": [{"claim_id": "c1", "claim_text": "Atlantis has a population of exactly 12,847,392 people.", "verdict": "contradicted"}],
+            "claims_to_preserve": [],
+            "trusted_evidence": [],
+            "contradictory_evidence": [],
+        },
+    )
+
+    corr_res = await _corrector_node(state)
+    assert corr_res["correction_status"] in ("unresolved", "failed")
+    assert corr_res["final_response"] == "Atlantis has a population of exactly 12,847,392 people."
+
+    # 2. Simulate failed reverification followed by Judge evaluation when retries are exhausted
+    state.update(corr_res)
+    state["correction_attempt_count"] = 2
+    state["retry_count"] = 2
+    state["reverification_attempt_count"] = 2
+    state["reverification_result"] = {
+        "passed": False,
+        "remaining_contradictions": 1,
+    }
+
+    judge_res = await _judge_node(state)
+    assert judge_res["judge_decision"] == "REJECT"
+    assert judge_res["answer_status"] == "REJECTED"
+    # correction_required must remain True reflecting failure semantics
+    assert judge_res["correction_required"] is True
+    assert judge_res["route"] == "reject"
+
+    state.update(judge_res)
+    assert _judge_route(state) == "reject"
+
+    # 3. Terminal reject node execution
+    term_res = _reject_node(state)
+    assert term_res["terminal_status"] == "rejected"
+    assert "could not be safely verified and has been rejected" in term_res["final_response"]
+    assert "12,847,392" not in term_res["final_response"]
+
+
+@pytest.mark.asyncio
+async def test_successful_correction_reports_applied():
+    """
+    Task 7.b: Successful correction reports 'applied', correction_required=False once accepted.
+    """
+    from orchestration.graph import _corrector_node, _judge_node
+
+    class FakeSuccessCorrector:
+        def __init__(self, *a, **kw):
+            pass
+        def correct(self, req):
+            return CorrectionResult(
+                execution_id=req.execution_id,
+                original_text=req.original_response,
+                corrected_text="Python was created by Guido van Rossum in 1989.",
+                changed_claims=[{"claim_id": "c1", "action": "corrected", "corrected": "Python was created by Guido van Rossum in 1989."}],
+                validation_status=ValidationStatus.VALID,
+                status=ExecutionStatus.COMPLETED,
+                attempt_count=1,
+            )
+
+    state = make_base_state(
+        draft_answer="Python was created by Elon Musk in 1999.",
+        llm_response="Python was created by Elon Musk in 1999.",
+        correction_required=True,
+        correction_request={
+            "execution_id": "e1",
+            "user_query": "Who created Python?",
+            "original_response": "Python was created by Elon Musk in 1999.",
+            "claims_to_correct": [{"claim_id": "c1", "claim_text": "Python was created by Elon Musk in 1999.", "verdict": "contradicted"}],
+            "claims_to_preserve": [],
+            "trusted_evidence": [],
+            "contradictory_evidence": [],
+        },
+    )
+
+    import agents.corrector_agent.corrector as ca_mod
+    orig_agent = ca_mod.CorrectorAgent
+    ca_mod.CorrectorAgent = FakeSuccessCorrector
+    try:
+        corr_res = await _corrector_node(state)
+        assert corr_res["correction_status"] == "applied"
+        assert corr_res["final_response"] == "Python was created by Guido van Rossum in 1989."
+
+        # When judge accepts reverification, correction_required becomes False
+        state.update(corr_res)
+        state["reverification_result"] = {
+            "passed": True,
+            "remaining_contradictions": 0,
+        }
+        judge_res = await _judge_node(state)
+        assert judge_res["judge_decision"] == "ACCEPT"
+        assert judge_res["correction_required"] is False
+    finally:
+        ca_mod.CorrectorAgent = orig_agent
+
+
+def test_no_correction_path_reports_none_or_skipped():
+    """
+    Task 7.c: Uncontested/verified draft does not run corrector; correction_status is None.
+    """
+    state = make_base_state(
+        draft_answer="Python was created by Guido van Rossum.",
+        llm_response="Python was created by Guido van Rossum.",
+    )
+    assert state.get("correction_status") is None
+    assert state.get("correction_required") is None or state.get("correction_required") is False
+
+
+def test_claim_extraction_case_a_dates():
+    """Case A: Terminal date preservation."""
+    text = "Python was created by Guido van Rossum. Python was first released in 1991."
+    claims = _extract_claims_from_draft(text)
+    claim_texts = [c["text"] for c in claims]
+    assert "Python was created by Guido van Rossum." in claim_texts
+    assert "Python was first released in 1991." in claim_texts
+    for c in claims:
+        span = c["span"]
+        assert span is not None
+        assert text[span[0]:span[1]] == c["text"]
+
+
+def test_claim_extraction_case_b_percentages():
+    """Case B: Percentage preservation."""
+    text = "The model achieved 92.45% accuracy."
+    claims = _extract_claims_from_draft(text)
+    assert len(claims) == 1
+    assert claims[0]["text"] == "The model achieved 92.45% accuracy."
+    span = claims[0]["span"]
+    assert span is not None
+    assert text[span[0]:span[1]] == claims[0]["text"]
+
+
+def test_claim_extraction_case_c_decimals():
+    """Case C: Decimal preservation."""
+    text = "The value is 3.14."
+    claims = _extract_claims_from_draft(text)
+    assert len(claims) == 1
+    assert claims[0]["text"] == "The value is 3.14."
+    span = claims[0]["span"]
+    assert span is not None
+    assert text[span[0]:span[1]] == claims[0]["text"]
+
+
+def test_claim_extraction_case_d_scenario_e():
+    """Case D: Scenario E multi-claim draft preserves claim 2 exactly with spans."""
+    text = "Python was created by Guido van Rossum. Python was first released in 1991. Elon Musk created Java."
+    claims = _extract_claims_from_draft(text)
+    assert len(claims) == 3
+    assert claims[0]["text"] == "Python was created by Guido van Rossum."
+    assert claims[0]["span"] == [0, 39]
+    assert claims[1]["text"] == "Python was first released in 1991."
+    assert claims[1]["span"] == [40, 74]
+    assert claims[2]["text"] == "Elon Musk created Java."
+    assert claims[2]["span"] == [75, 98]
+    for c in claims:
+        span = c["span"]
+        assert text[span[0]:span[1]] == c["text"]
+
+

@@ -50,6 +50,7 @@ class HalluciGuardState(TypedDict, total=False):
     user_query: str
     llm_response: str
     draft_response: str
+    draft_answer: str
     generation_mode: str  # "normal" or "stress_test"
     conversation_history: list[dict[str, str]]
     generation: dict[str, Any]
@@ -74,6 +75,11 @@ class HalluciGuardState(TypedDict, total=False):
     hallucination_probability: float
     confidence: float
     verification_status: str
+    draft_verification_status: str
+    original_verification_status: str
+    correction_status: str
+    reverification_status: str
+    persisted_fact_ids: list[str]
     verifier: dict[str, Any]
     judge_pairs: list[dict[str, Any]]
     evidence: list[dict[str, Any]]
@@ -82,7 +88,10 @@ class HalluciGuardState(TypedDict, total=False):
     nli_results: list[dict[str, Any]]
     judge: dict[str, Any]
     judge_decision: str
+    answer_status: str
+    correction_required: bool
     corrector: dict[str, Any]
+    extracted_claims: list[dict[str, Any]]
     memory: dict[str, Any]
     memory_context: dict[str, Any]
     knowledge_graph_context: dict[str, Any]

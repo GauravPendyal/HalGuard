@@ -4,9 +4,20 @@ HalluciGuard Configuration — Pydantic Settings with Environment Variable Loadi
 All application-wide configuration is managed through this module.
 Settings are loaded from ``.env`` file and/or environment variables.
 """
+import os
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
+from dotenv import find_dotenv, load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Ensure .env from repository root is loaded into os.environ
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_ENV_FILE = _REPO_ROOT / ".env"
+if _ENV_FILE.exists():
+    load_dotenv(_ENV_FILE)
+else:
+    load_dotenv(find_dotenv(usecwd=True))
 
 
 class Settings(BaseSettings):
@@ -84,7 +95,24 @@ class Settings(BaseSettings):
     verifier_port: int = 8002
     log_level: str = "INFO"
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=str(_ENV_FILE) if _ENV_FILE.exists() else ".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    def validate_n8n_configuration(self) -> list[str]:
+        """Validate required n8n environment variables if n8n retrieval is enabled."""
+        if not self.n8n_retrieval_enabled:
+            return []
+        missing: list[str] = []
+        if not self.n8n_retrieval_webhook_url:
+            missing.append("N8N_RETRIEVAL_WEBHOOK_URL")
+        if self.n8n_auth_mode == "header" and not self.n8n_webhook_secret:
+            missing.append("N8N_WEBHOOK_SECRET")
+        if not self.n8n_header_name:
+            missing.append("N8N_HEADER_NAME")
+        return missing
 
 
 @lru_cache()

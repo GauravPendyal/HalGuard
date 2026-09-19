@@ -215,8 +215,7 @@ print("\n[TEST 6] CorrectionRequest Payload Validation")
 assert isinstance(cr5, CorrectionRequest)
 assert cr5.user_query == "Tell me about Python."
 assert cr5.original_response.startswith("Python is a high-level")
-assert len(cr5.trusted_evidence) == 2
-assert len(cr5.contradictory_evidence) == 1
+assert len(cr5.trusted_evidence) == 3
 assert "Modify only the 1 claim(s)" in cr5.correction_instructions
 print("✅ PASSED — CorrectionRequest payload conforms strictly to Pydantic schema.")
 
@@ -227,9 +226,12 @@ r_pass = judge.evaluate(verifier_result=vr1, reverification_result=rev_pass)
 assert str_val(r_pass.decision) == "ACCEPT", f"Expected ACCEPT for passed reverification, got {r_pass.decision}"
 
 rev_fail = ReverificationResult(passed=False, verifier_result=vr2, remaining_contradictions=1)
-r_fail = judge.evaluate(verifier_result=vr2, reverification_result=rev_fail)
-assert str_val(r_fail.decision) == "REJECT", f"Expected REJECT for failed reverification, got {r_fail.decision}"
-print(f"✅ PASSED — Reverification Pass: {str_val(r_pass.decision)} | Fail: {str_val(r_fail.decision)}")
+r_retry = judge.evaluate(verifier_result=vr2, reverification_result=rev_fail, retry_count=0)
+assert str_val(r_retry.decision) == "CORRECT", f"Expected CORRECT for retryable reverification failure, got {r_retry.decision}"
+
+r_fail = judge.evaluate(verifier_result=vr2, reverification_result=rev_fail, retry_count=2)
+assert str_val(r_fail.decision) == "REJECT", f"Expected REJECT for exhausted reverification, got {r_fail.decision}"
+print(f"✅ PASSED — Reverification Pass: {str_val(r_pass.decision)} | Retry: {str_val(r_retry.decision)} | Exhausted Fail: {str_val(r_fail.decision)}")
 
 # TEST 8: Invalid Input / Safe Failure Handling
 print("\n[TEST 8] Safe Failure Handling on Invalid / Null VerifierResult")
@@ -250,14 +252,12 @@ assert not hasattr(judge, "nli_engine")
 assert not hasattr(judge, "retriever")
 print("✅ PASSED — Judge performs decision logic without running NLI or web retrieval.")
 
-# TEST 11 (Test F): Evidence Separation Validation
-print("\n[TEST 11] Task 12 Test F — Evidence Separation Validation")
+# TEST 11 (Test F): Evidence Grounding Authority Validation
+print("\n[TEST 11] Task 12 Test F — Evidence Grounding Authority Validation")
 trusted_ids = [e.evidence_id for e in cr5.trusted_evidence]
-contradictory_ids = [e.evidence_id for e in cr5.contradictory_evidence]
-assert "E2" not in trusted_ids
-assert "E2" in contradictory_ids
-assert set(trusted_ids) == {"E1", "E3"}
-print("✅ PASSED — trusted_evidence contains only preserved claim evidence (E1, E3); contradictory_evidence contains only E2.")
+assert "E2" in trusted_ids, "E2 must be in trusted_evidence to ground the Corrector"
+assert set(trusted_ids) == {"E1", "E2", "E3"}
+print("✅ PASSED — trusted_evidence contains grounding evidence for both preserved and contradicted claims (E1, E2, E3).")
 
 print("\n" + "=" * 80)
 print("  ALL 11 CANONICAL UNIT TESTS PASSED SUCCESSFULLY (100%)")

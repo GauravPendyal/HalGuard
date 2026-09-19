@@ -181,6 +181,154 @@ class NLIEngine:
             "error": "nli_model_unavailable_or_failed",
         }
 
+    def _get_max_length(self) -> int:
+        """Dynamically determine maximum sequence length supported by active model/pipeline."""
+        max_len = 512
+        if self.pipeline is not None:
+            tokenizer = getattr(self.pipeline, "tokenizer", None)
+            if tokenizer is not None:
+                t_max = getattr(tokenizer, "model_max_length", None)
+                if isinstance(t_max, int) and 0 < t_max < 100_000:
+                    max_len = t_max
+            model = getattr(self.pipeline, "model", None)
+            if model is not None and hasattr(model, "config"):
+                m_max = getattr(model.config, "max_position_embeddings", None)
+                if isinstance(m_max, int) and 0 < m_max < 100_000:
+                    max_len = min(max_len, m_max)
+        return max_len
+
+    def _get_special_tokens_count(self, tokenizer: Any) -> int:
+        """Count special tokens required for a premise-hypothesis pair (e.g., [CLS]...[SEP]...[SEP])."""
+        if hasattr(tokenizer, "num_special_tokens_to_add"):
+            try:
+                return tokenizer.num_special_tokens_to_add(pair=True)
+            except Exception:
+                pass
+        return 3
+
+    def _encode_tokens(self, tokenizer: Any, text: str) -> List[int]:
+        """Tokenize text into token IDs without special tokens and without emitting length warnings."""
+        if not text:
+            return []
+        tok_logger = logging.getLogger("transformers.tokenization_utils_base")
+        prev_level = tok_logger.level
+        try:
+            tok_logger.setLevel(logging.ERROR)
+            return tokenizer.encode(text, add_special_tokens=False)
+        finally:
+            tok_logger.setLevel(prev_level)
+
+    def _chunk_evidence(self, claim: str, evidence: str) -> List[str]:
+        """
+        Split long evidence into token-aware chunks bounded by the model's max sequence limit.
+        Budget reservation accounts for claim tokens, special tokens, and a safety margin.
+        """
+        if not evidence or not evidence.strip():
+            return [evidence or ""]
+
+        tokenizer = getattr(self.pipeline, "tokenizer", None)
+        if tokenizer is None:
+            # When tokenizer is absent (e.g. mock test pipeline), treat as single item
+            return [evidence]
+
+        max_seq_len = self._get_max_length()
+        num_special = self._get_special_tokens_count(tokenizer)
+        # Reserve overhead for pair special tokens + small safety margin
+        overhead = num_special + 3
+
+        claim_tokens = self._encode_tokens(tokenizer, claim or "")
+        claim_len = len(claim_tokens)
+        max_evidence_tokens = max_seq_len - claim_len - overhead
+
+        if max_evidence_tokens < 16:
+            # The claim alone exhausts the sequence length budget. Under requirement 8,
+            # we cannot alter or drop the claim. Fail safely to trigger degraded neutral.
+            raise ValueError(
+                f"Claim length ({claim_len} tokens) leaves insufficient budget for evidence within max sequence length {max_seq_len}"
+            )
+
+        ev_tokens = self._encode_tokens(tokenizer, evidence)
+        if len(ev_tokens) <= max_evidence_tokens:
+            return [evidence]
+
+        # Long evidence: chunk with 20% overlap stride so boundary facts are not severed
+        stride = max(16, int(max_evidence_tokens * 0.8))
+        chunks: List[str] = []
+        start_idx = 0
+        total_ev_tokens = len(ev_tokens)
+
+        while start_idx < total_ev_tokens:
+            end_idx = min(start_idx + max_evidence_tokens, total_ev_tokens)
+            tok_slice = ev_tokens[start_idx:end_idx]
+            chunk_str = tokenizer.decode(tok_slice, skip_special_tokens=True).strip()
+            if chunk_str:
+                # Re-verify token length in case decoding boundary words expanded token count
+                re_tokens = self._encode_tokens(tokenizer, chunk_str)
+                if len(re_tokens) > max_evidence_tokens:
+                    excess = len(re_tokens) - max_evidence_tokens
+                    tok_slice = tok_slice[:-excess] if excess < len(tok_slice) else tok_slice[:1]
+                    chunk_str = tokenizer.decode(tok_slice, skip_special_tokens=True).strip()
+                chunks.append(chunk_str)
+            if end_idx >= total_ev_tokens:
+                break
+            start_idx += stride
+
+        return chunks or [evidence]
+
+    def _aggregate_chunk_results(
+        self, chunk_results: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        Conservatively aggregate multi-chunk classification results for a single evidence item.
+        Preserves decisive contradictions or entailments without diluting through naive averaging.
+        """
+        if not chunk_results:
+            return self._neutral()
+        if len(chunk_results) == 1:
+            return chunk_results[0]
+
+        valid_results = [r for r in chunk_results if not r.get("degraded", False)]
+        if not valid_results:
+            return self._neutral()
+
+        max_contra = max(r.get("contradiction_score", 0.0) for r in valid_results)
+        max_entail = max(r.get("entailment_score", 0.0) for r in valid_results)
+
+        # High-confidence contradiction dominating entailment by at least the 0.05 margin
+        if max_contra >= 0.50 and (max_contra - max_entail) >= 0.05:
+            c_score = round(max_contra, 6)
+            e_score = round(min(max_entail, max(0.0, 1.0 - c_score)), 6)
+            n_score = round(max(0.0, 1.0 - c_score - e_score), 6)
+            return {
+                "label": EntailmentLabel.CONTRADICTION,
+                "entailment_score": e_score,
+                "contradiction_score": c_score,
+                "neutral_score": n_score,
+            }
+
+        # High-confidence entailment dominating contradiction by at least the 0.05 margin
+        if max_entail >= 0.50 and (max_entail - max_contra) >= 0.05:
+            e_score = round(max_entail, 6)
+            c_score = round(min(max_contra, max(0.0, 1.0 - e_score)), 6)
+            n_score = round(max(0.0, 1.0 - e_score - c_score), 6)
+            return {
+                "label": EntailmentLabel.ENTAILMENT,
+                "entailment_score": e_score,
+                "contradiction_score": c_score,
+                "neutral_score": n_score,
+            }
+
+        # Sub-threshold, conflicting, or neutral chunks: conservative neutral
+        e_score = round(min(max_entail, 0.44), 6)
+        c_score = round(min(max_contra, 0.44), 6)
+        n_score = round(max(0.0, 1.0 - e_score - c_score), 6)
+        return {
+            "label": EntailmentLabel.NEUTRAL,
+            "entailment_score": e_score,
+            "contradiction_score": c_score,
+            "neutral_score": n_score,
+        }
+
     def classify(
         self, claim: str, evidence: str, model_name: str | None = None
     ) -> Dict[str, Any]:
@@ -192,10 +340,44 @@ class NLIEngine:
         if not self._is_available or self.pipeline is None:
             return self._neutral()
         try:
-            # Premise = evidence, hypothesis = claim.
-            raw = self.pipeline({"text": evidence or "", "text_pair": claim or ""})
-            scores = _normalize_scores(_flatten_predictions(raw), self._get_id2label())
-            return _decision(scores) if sum(scores.values()) > 0 else self._neutral()
+            chunks = self._chunk_evidence(claim, evidence)
+            if not chunks:
+                chunks = [evidence or ""]
+
+            if len(chunks) == 1:
+                chunk = chunks[0]
+                try:
+                    raw = self.pipeline(
+                        {"text": chunk or "", "text_pair": claim or ""},
+                        truncation=True,
+                        max_length=self._get_max_length(),
+                    )
+                except TypeError:
+                    raw = self.pipeline({"text": chunk or "", "text_pair": claim or ""})
+                scores = _normalize_scores(_flatten_predictions(raw), self._get_id2label())
+                return _decision(scores) if sum(scores.values()) > 0 else self._neutral()
+
+            # Multi-chunk evidence
+            flat_items = [{"text": c or "", "text_pair": claim or ""} for c in chunks]
+            try:
+                raw_batch = self.pipeline(
+                    flat_items,
+                    truncation=True,
+                    max_length=self._get_max_length(),
+                )
+            except TypeError:
+                raw_batch = self.pipeline(flat_items)
+
+            if not isinstance(raw_batch, list) or len(raw_batch) != len(flat_items):
+                raise ValueError("NLI output length mismatch for chunked evidence")
+
+            id2label = self._get_id2label()
+            chunk_results = []
+            for raw_item in raw_batch:
+                scores = _normalize_scores(_flatten_predictions(raw_item), id2label)
+                res = _decision(scores) if sum(scores.values()) > 0 else self._neutral()
+                chunk_results.append(res)
+            return self._aggregate_chunk_results(chunk_results)
         except Exception as exc:
             logger.warning("NLI classification failed: %s", exc)
             return self._neutral()
@@ -224,22 +406,44 @@ class NLIEngine:
             self.last_inference_executed = False
             return [self._neutral() for _ in evidences]
         try:
-            batch = [
-                {"text": evidence or "", "text_pair": claim or ""}
-                for evidence in evidences
-            ]
+            flat_items: List[Dict[str, str]] = []
+            chunk_to_ev_idx: List[int] = []
+
+            for ev_idx, ev in enumerate(evidences):
+                chunks = self._chunk_evidence(claim, ev)
+                if not chunks:
+                    chunks = [ev or ""]
+                for chunk in chunks:
+                    flat_items.append({"text": chunk or "", "text_pair": claim or ""})
+                    chunk_to_ev_idx.append(ev_idx)
+
             _t0 = time.perf_counter()
-            raw_batch = self.pipeline(batch)
-            self.last_latency_ms = int((time.perf_counter() - _t0) * 1000)
-            if not isinstance(raw_batch, list) or len(raw_batch) != len(evidences):
-                raise ValueError("NLI batch output is not aligned with input batch")
-            id2label = self._get_id2label()
-            outputs = []
-            for raw_item in raw_batch:
-                scores = _normalize_scores(_flatten_predictions(raw_item), id2label)
-                outputs.append(
-                    _decision(scores) if sum(scores.values()) > 0 else self._neutral()
+            try:
+                raw_batch = self.pipeline(
+                    flat_items,
+                    truncation=True,
+                    max_length=self._get_max_length(),
                 )
+            except TypeError:
+                raw_batch = self.pipeline(flat_items)
+            self.last_latency_ms = int((time.perf_counter() - _t0) * 1000)
+
+            if not isinstance(raw_batch, list) or len(raw_batch) != len(flat_items):
+                raise ValueError("NLI batch output is not aligned with input batch")
+
+            id2label = self._get_id2label()
+            ev_chunk_results: List[List[Dict[str, Any]]] = [[] for _ in range(len(evidences))]
+            for flat_idx, raw_item in enumerate(raw_batch):
+                scores = _normalize_scores(_flatten_predictions(raw_item), id2label)
+                res = _decision(scores) if sum(scores.values()) > 0 else self._neutral()
+                ev_idx = chunk_to_ev_idx[flat_idx]
+                ev_chunk_results[ev_idx].append(res)
+
+            outputs: List[Dict[str, Any]] = []
+            for ev_idx in range(len(evidences)):
+                agg = self._aggregate_chunk_results(ev_chunk_results[ev_idx])
+                outputs.append(agg)
+
             # Real DeBERTa inference succeeded — record execution proof.
             self.last_status = "executed"
             self.last_inference_executed = True

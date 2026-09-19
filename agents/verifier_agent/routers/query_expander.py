@@ -86,15 +86,18 @@ class QueryExpander:
 
         queries = [clean_q]
 
-        resolution = self.entity_resolver.resolve(clean_q, domain)
-        if resolution.canonical_query and resolution.canonical_query.lower() != clean_q.lower():
+        # Clean terminal punctuation from query string
+        clean_q_no_punct = clean_q.rstrip(".?!").strip()
+
+        resolution = self.entity_resolver.resolve(clean_q_no_punct, domain)
+        if resolution.canonical_query and resolution.canonical_query.lower() != clean_q_no_punct.lower():
             queries.append(resolution.canonical_query)
 
         # Bidirectional relational query generation
-        # 1. Passive creation: "Java was created by James Gosling" -> "Java created by", "who created Java"
+        # 1. Passive creation: "Java was created by James Gosling" -> "Java created by", "Java creator", "who created Java"
         passive_create = re.search(
             r"^([A-Za-z0-9\s\-]+?)\s+(?:was|is|were)?\s*(?:originally\s+)?(created|developed|invented|founded|written|authored|discovered|built)\s+by\s+([A-Za-z0-9\s\-]+)",
-            clean_q,
+            clean_q_no_punct,
             re.IGNORECASE,
         )
         if passive_create:
@@ -102,12 +105,13 @@ class QueryExpander:
             verb = passive_create.group(2).lower()
             if creation and len(creation) > 2:
                 queries.append(f"{creation} {verb} by")
+                queries.append(f"{creation} creator")
                 queries.append(f"who {verb} {creation}")
 
-        # 2. Active creation: "Ram Charan invented the Java programming language" -> "Java programming language inventor", "who created Java programming language"
+        # 2. Active creation: "Elon Musk created Java" -> "Java created by", "Java creator", "who created Java"
         active_create = re.search(
             r"^([A-Za-z0-9\s\-]+?)\s+(created|developed|invented|founded|built|designed)\s+(?:the\s+)?([A-Za-z0-9\s\-]+)",
-            clean_q,
+            clean_q_no_punct,
             re.IGNORECASE,
         )
         if active_create and not any(w in active_create.group(1).lower() for w in ("was", "is", "were", "that", "which")):
@@ -115,12 +119,13 @@ class QueryExpander:
             creation = active_create.group(3).strip()
             if creation and len(creation) > 2:
                 queries.append(f"{creation} {verb} by")
+                queries.append(f"{creation} creator")
                 queries.append(f"who {verb} {creation}")
 
         # 3. Kinship / Family: "Chiranjeevi is the father of Allu Arjun" -> "Allu Arjun father", "Allu Arjun parents"
         kin_match = re.search(
             r"^([A-Za-z0-9\s\-]+?)\s+is\s+(?:the\s+)?(?:maternal\s+|paternal\s+)?(father|mother|parent|son|daughter)\s+of\s+([A-Za-z0-9\s\-]+)",
-            clean_q,
+            clean_q_no_punct,
             re.IGNORECASE,
         )
         if kin_match:

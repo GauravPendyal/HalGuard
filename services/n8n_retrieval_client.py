@@ -22,7 +22,17 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from pathlib import Path
+from dotenv import find_dotenv, load_dotenv
 import httpx
+
+# Ensure .env is loaded into environment variables
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+_ENV_FILE = _REPO_ROOT / ".env"
+if _ENV_FILE.exists():
+    load_dotenv(_ENV_FILE)
+else:
+    load_dotenv(find_dotenv(usecwd=True))
 
 # Ensure verifier_agent is in sys.path for schema imports
 VERIFIER_DIR = os.path.abspath(
@@ -60,32 +70,30 @@ class N8NRetrievalClient:
         webhook_secret: Optional[str] = None,
         timeout_seconds: Optional[float] = None,
     ) -> None:
-        self.webhook_url = (
-            webhook_url
-            or os.environ.get(
-                "N8N_RETRIEVAL_WEBHOOK_URL",
-                "https://manju200609.app.n8n.cloud/webhook/halluciguard-verify-v2",
-            )
-        ).strip()
-        self.health_url = (
-            health_url
-            or os.environ.get(
-                "N8N_HEALTH_WEBHOOK_URL",
-                "https://manju200609.app.n8n.cloud/webhook/halluciguard-health",
-            )
-        ).strip()
-        self.auth_mode = (
-            auth_mode
-            or os.environ.get("N8N_AUTH_MODE", "header")
-        ).strip().lower()
-        self.header_name = (
-            header_name
-            or os.environ.get("N8N_HEADER_NAME", "X-API-Key")
-        ).strip()
-        self.webhook_secret = (
-            webhook_secret
-            or os.environ.get("N8N_WEBHOOK_SECRET", "")
-        ).strip()
+        if webhook_url is not None:
+            self.webhook_url = webhook_url.strip()
+        else:
+            self.webhook_url = (os.environ.get("N8N_RETRIEVAL_WEBHOOK_URL") or "https://manju200609.app.n8n.cloud/webhook/halluciguard-verify-v2").strip()
+
+        if health_url is not None:
+            self.health_url = health_url.strip()
+        else:
+            self.health_url = (os.environ.get("N8N_HEALTH_WEBHOOK_URL") or "https://manju200609.app.n8n.cloud/webhook/halluciguard-health").strip()
+
+        if auth_mode is not None:
+            self.auth_mode = auth_mode.strip().lower()
+        else:
+            self.auth_mode = (os.environ.get("N8N_AUTH_MODE") or "header").strip().lower()
+
+        if header_name is not None:
+            self.header_name = header_name.strip()
+        else:
+            self.header_name = (os.environ.get("N8N_HEADER_NAME") or "X-API-Key").strip()
+
+        if webhook_secret is not None:
+            self.webhook_secret = webhook_secret.strip()
+        else:
+            self.webhook_secret = (os.environ.get("N8N_WEBHOOK_SECRET") or "").strip()
         
         env_timeout = os.environ.get("N8N_TIMEOUT_SECONDS")
         self.timeout_seconds = (
@@ -94,14 +102,47 @@ class N8NRetrievalClient:
             else (float(env_timeout) if env_timeout else 60.0)
         )
 
+    def validate_configuration(self, raise_on_error: bool = False) -> List[str]:
+        """
+        Validate that all required environment/client configuration variables are present.
+
+        Returns:
+            List of names of missing required variables (names only, no secrets).
+        Raises:
+            ValueError: If raise_on_error is True and any required variable is missing.
+        """
+        missing: List[str] = []
+        if not self.webhook_url:
+            missing.append("N8N_RETRIEVAL_WEBHOOK_URL")
+        if self.auth_mode == "header" and not self.webhook_secret:
+            missing.append("N8N_WEBHOOK_SECRET")
+        if not self.header_name:
+            missing.append("N8N_HEADER_NAME")
+
+        if missing:
+            msg = (
+                f"n8n configuration missing required variable(s): {', '.join(missing)}. "
+                "Ensure these variables are defined in your .env file or environment."
+            )
+            logger.warning(msg)
+            if raise_on_error:
+                raise ValueError(msg)
+        return missing
+
     def _build_headers(self) -> Dict[str, str]:
         """Construct request headers respecting the configured AUTH_MODE and header name."""
         headers: Dict[str, str] = {
             "Content-Type": "application/json",
             "User-Agent": "HalluciGuard-Verifier/2.0 (n8n-client)",
         }
-        if self.auth_mode == "header" and self.webhook_secret:
-            headers[self.header_name] = self.webhook_secret
+        if self.auth_mode == "header":
+            if self.webhook_secret:
+                headers[self.header_name] = self.webhook_secret
+            else:
+                logger.warning(
+                    "N8NRetrievalClient: auth_mode='header' but 'N8N_WEBHOOK_SECRET' is not set; "
+                    "request will be sent without authentication header."
+                )
         return headers
 
     def _get_timeout(self) -> httpx.Timeout:
