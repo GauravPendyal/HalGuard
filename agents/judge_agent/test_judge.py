@@ -221,7 +221,11 @@ print("✅ PASSED — CorrectionRequest payload conforms strictly to Pydantic sc
 
 # TEST 7 (Test H): Reverification Gate Evaluation
 print("\n[TEST 7] Reverification Gate Evaluation (passed=True vs passed=False)")
-rev_pass = ReverificationResult(passed=True, verifier_result=vr1, remaining_contradictions=0)
+# A safe ACCEPT requires the re-verifier to have explicitly confirmed the
+# correction succeeded (claim lineage preserved), not merely a clean re-verify.
+rev_pass = ReverificationResult(
+    passed=True, verifier_result=vr1, remaining_contradictions=0, correction_successful=True
+)
 r_pass = judge.evaluate(verifier_result=vr1, reverification_result=rev_pass)
 assert str_val(r_pass.decision) == "ACCEPT", f"Expected ACCEPT for passed reverification, got {r_pass.decision}"
 

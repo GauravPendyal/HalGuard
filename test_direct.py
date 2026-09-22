@@ -17,6 +17,7 @@ import asyncio
 import os
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 # Setup root path
@@ -265,6 +266,31 @@ def format_breakdown(query: str, result: dict, total_time: float) -> None:
         corr_summary_str = "FAILED / UNRESOLVED"
     else:
         corr_summary_str = "NOT NEEDED"
+
+    # Execution Lifecycle Trace (observability).
+    # `format_breakdown` above renders only the TERMINAL merged state, so a
+    # VERIFY_AGAIN retry loop (multiple verifier/judge passes) is invisible in
+    # the per-agent sections. The trace is the only faithful per-node record
+    # (HalluciGuardState is last-write-wins with no reducers), so we surface it
+    # here to make the printed report agree with the real graph lifecycle.
+    trace = result.get("trace") or []
+    if trace:
+        node_counts = Counter(ev.get("node") for ev in trace)
+        print("\n" + "-" * 80)
+        print("   EXECUTION LIFECYCLE TRACE (per-node, faithful order)")
+        print("-" * 80)
+        print(
+            f"  • Verifier passes: {node_counts.get('verifier', 0)}   "
+            f"Judge passes: {node_counts.get('judge', 0)}   "
+            f"Retry budget: {result.get('retry_count', 0)}/{result.get('max_retries', 2)}"
+        )
+        for i, ev in enumerate(trace):
+            dec = (ev.get("details") or {}).get("decision")
+            dec_str = f"  decision={dec}" if dec else ""
+            print(
+                f"    {i:>2}. {str(ev.get('node')):<16} "
+                f"{str(ev.get('status')):<10} rc={ev.get('retry_count')}{dec_str}"
+            )
 
     print("\n" + "=" * 80)
     print("  FINAL SUPERVISOR SUMMARY & TELEMETRY BREAKDOWN")

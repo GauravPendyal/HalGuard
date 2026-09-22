@@ -802,14 +802,43 @@ async def _corrector_node(state: HalluciGuardState) -> dict[str, Any]:
             claims_to_preserve = []
             trusted_ev = []
             contra_ev = []
+            # Reuse the Judge's replacement-capable evidence classifier so a
+            # reconstructed CorrectionRequest routes evidence the same way the
+            # Judge would: only evidence that establishes the true replacement
+            # fact (Category B) is trusted; pure-refutation/context evidence
+            # (Category A) goes to contradictory_evidence and never grounds a fix.
+            try:
+                from agents.judge_agent.judge_agent import JudgeAgent
+                from orchestration.schemas import Evidence as _Ev
+                _is_replacement = JudgeAgent._is_replacement_capable_evidence
+            except Exception:
+                _is_replacement = None
+
+            def _route_evidence(claim_text: str, ev_list: list) -> None:
+                for ev in ev_list:
+                    routed = False
+                    if _is_replacement is not None:
+                        try:
+                            ev_obj = _Ev.model_validate(ev) if isinstance(ev, dict) else ev
+                            if _is_replacement(claim_text, ev_obj):
+                                trusted_ev.append(ev)
+                            else:
+                                contra_ev.append(ev)
+                            routed = True
+                        except Exception:
+                            routed = False
+                    if not routed:
+                        trusted_ev.append(ev)
+
             if isinstance(v_res, dict):
                 for cr in v_res.get("claim_reports", []):
                     verdict_str = str(cr.get("verdict", "")).lower()
                     if "contradict" in verdict_str:
                         claims_to_correct.append(cr)
-                        trusted_ev.extend(cr.get("evidence", []))
+                        _route_evidence(str(cr.get("claim_text", "")), cr.get("evidence", []))
                     elif "verif" in verdict_str and "unverif" not in verdict_str:
                         claims_to_preserve.append(cr)
+                        # Verified claims: all their evidence is trusted grounding.
                         trusted_ev.extend(cr.get("evidence", []))
 
             corr_req = CorrectionRequest(
@@ -824,14 +853,16 @@ async def _corrector_node(state: HalluciGuardState) -> dict[str, Any]:
             )
 
         def _run_corrector():
+            from agents.corrector_agent.corrector.config import CorrectorConfig
+            cfg = CorrectorConfig.from_env()
+
             provider = os.environ.get("HG_CORRECTOR_PROVIDER", "").strip().lower()
             has_openrouter_key = bool(os.environ.get("OPENROUTER_API_KEY", "").strip())
             if (provider == "openrouter" or (not provider and has_openrouter_key)) and has_openrouter_key:
                 from services.openrouter_corrector import OpenRouterCorrectorGenerator
-                return CorrectorAgent(generator=OpenRouterCorrectorGenerator()).correct(corr_req)
+                generator = OpenRouterCorrectorGenerator(config=cfg)
+                return CorrectorAgent(config=cfg, generator=generator).correct(corr_req)
 
-            from agents.corrector_agent.corrector.config import CorrectorConfig
-            cfg = CorrectorConfig.from_env()
             if not cfg.allow_base_model_fallback and not os.path.exists(cfg.model_path):
                 cfg = CorrectorConfig(
                     max_retries=cfg.max_retries,
@@ -849,6 +880,7 @@ async def _corrector_node(state: HalluciGuardState) -> dict[str, Any]:
                     base_model_name=cfg.base_model_name,
                     allow_base_model_fallback=True,
                     deterministic=cfg.deterministic,
+                    openrouter_model=cfg.openrouter_model,
                 )
             try:
                 agent = CorrectorAgent(config=cfg)
@@ -1011,11 +1043,57 @@ async def _reverifier_node(state: HalluciGuardState) -> dict[str, Any]:
             if str(getattr(r, "verdict", "")).lower() in ("contradicted", "verdictlabel.contradicted")
         )
         uncertain_count = max(0, total_claims - supported_count - contradicted_count)
+
+        # ------------------------------------------------------------------
+        # CLAIM LINEAGE GATE (critical safety invariant).
+        #
+        # A previously CONTRADICTED claim that entered correction cannot be
+        # laundered into ACCEPTED merely because a fresh, broad re-verification
+        # of the (possibly unchanged) candidate text happens to return zero
+        # contradictions. If a correction was REQUIRED but the Corrector did
+        # not actually apply an evidence-grounded change, the correction is
+        # UNRESOLVED — the answer is not safe and re-verification must fail
+        # closed, regardless of what re-verifying the unchanged text returns.
+        #
+        # correction_status is set by _corrector_node:
+        #   "applied"    -> corrected_text genuinely changed & validated
+        #   "unresolved" -> nothing accepted / abstained / terminated_unresolved
+        #   "failed"     -> invalid / fallback / model unavailable
+        #   "completed"  -> exec completed and correction was not required
+        # ------------------------------------------------------------------
+        corr_status = str(state.get("correction_status", "")).lower()
+        correction_was_required = bool(state.get("correction_required", False))
+        correction_applied = corr_status == "applied"
+        # Detect unresolved/abstained lineage directly from the corrector output too.
+        corr_changed = corr_res.get("changed_claims", []) if isinstance(corr_res, dict) else []
+        has_unresolved_lineage = any(
+            isinstance(c, dict) and str(c.get("action", "")).lower() in ("unresolved", "abstained", "model_unavailable", "input_error")
+            for c in corr_changed
+        )
+        # Text-level lineage: did the candidate actually differ from the original draft?
+        original_draft = str(
+            corr_res.get("original_text") if isinstance(corr_res, dict) else ""
+        ) or str(state.get("draft_answer") or state.get("llm_response", ""))
+        text_changed = bool(candidate_text.strip()) and candidate_text.strip() != original_draft.strip()
+
+        lineage_broken = correction_was_required and (
+            not correction_applied
+            or corr_status in ("unresolved", "failed", "fallback")
+            or has_unresolved_lineage
+            or not text_changed
+        )
+
         correction_successful = (
             canonical_v_res.status == ExecutionStatus.COMPLETED
             and contradicted_count == 0
-            and (supported_count > 0 or total_claims == 0)
+            and supported_count > 0
+            and not lineage_broken
         )
+        # If the lineage is broken, the previously-contradicted claim is still
+        # unresolved: surface at least one remaining contradiction so the Judge
+        # cannot ACCEPT and instead retries or rejects.
+        if lineage_broken:
+            contradicted_count = max(contradicted_count, 1)
         passed = correction_successful
 
         rev_result = ReverificationResult(

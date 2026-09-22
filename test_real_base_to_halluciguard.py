@@ -42,8 +42,9 @@ async def main():
         domain="general",
     )
 
-    # 3. Show the complete pipeline breakdown
-    format_breakdown(user_query, result, generation.latency_ms)
+    # 3. Show the complete pipeline breakdown.
+    # format_breakdown expects total_time in SECONDS; latency_ms is milliseconds.
+    format_breakdown(user_query, result, generation.latency_ms / 1000.0)
 
     # 4. Explicit contract assertions
     print("\n[REAL E2E ASSERTIONS]")

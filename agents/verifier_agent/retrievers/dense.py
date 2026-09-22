@@ -27,7 +27,24 @@ class DenseRetriever:
             logging.warning("sentence_transformers not installed. DenseRetriever falling back.")
             self._is_available = False
         except Exception as e:
-            logging.warning(f"Error loading dense model {self.model_name}: {e}. Falling back.")
+            # The most common cause of the cryptic "'NoneType' object has no attribute
+            # 'endswith'" here is that the embedding model is not present in the local
+            # HuggingFace cache while ALLOW_MODEL_DOWNLOADS is false: sentence-transformers'
+            # snapshot resolution returns None for the model path, then calls .endswith on it.
+            # This is a RECALL degradation (dense/semantic retrieval is skipped; sparse BM25
+            # + lexical + cross-encoder reranking still run), not a correctness corruption.
+            is_none_path = isinstance(e, AttributeError) and "endswith" in str(e)
+            if is_none_path:
+                logging.warning(
+                    "Dense model '%s' could not be resolved locally (likely not cached and "
+                    "ALLOW_MODEL_DOWNLOADS is false). Falling back to sparse+rerank retrieval "
+                    "(reduced semantic recall). Set ALLOW_MODEL_DOWNLOADS=true or pre-cache the "
+                    "model to restore dense retrieval. Underlying error: %s",
+                    self.model_name,
+                    e,
+                )
+            else:
+                logging.warning(f"Error loading dense model {self.model_name}: {e}. Falling back.")
             self._is_available = False
 
     def build_index(self, passages: List[Passage]) -> None:

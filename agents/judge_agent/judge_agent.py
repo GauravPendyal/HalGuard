@@ -341,7 +341,18 @@ class JudgeAgent:
         elif isinstance(reverification_result, ReverificationResult):
             rev_res = reverification_result
 
-        if rev_res is not None and rev_res.passed and rev_res.remaining_contradictions == 0:
+        # Fail-closed acceptance gate: a correction is only safe to release when
+        # re-verification passed, zero contradictions remain, AND the re-verifier
+        # explicitly confirmed the correction succeeded (claim lineage preserved).
+        # correction_successful is forced False by the re-verifier when a required
+        # correction was not actually applied, so this prevents a failed correction
+        # from being laundered into ACCEPT by an incidentally clean re-verification.
+        if (
+            rev_res is not None
+            and rev_res.passed
+            and rev_res.remaining_contradictions == 0
+            and rev_res.correction_successful
+        ):
             return JudgeResult(
                 decision=JudgeDecision.ACCEPT,
                 answer_status=AnswerStatus.ACCEPTED,
